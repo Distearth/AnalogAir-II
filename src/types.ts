@@ -144,3 +144,46 @@ export interface SystemPreferences {
   owntonePort: number;
   enableToneDsp: boolean;
 }
+
+export interface DeadstreamConfig {
+  enabled: boolean;
+  model?: string;
+  display: {
+    width: number;
+    height: number;
+    rotation: number;
+    spi_port: number;
+    spi_cs: number;
+    dc_pin: number;
+    rst_pin: number;
+    bl_pin: number;
+    brightness: number;
+  };
+  knobs: {
+    volume: { name: string; clk: number; dt: number; sw: number };
+    tone: { name: string; clk: number; dt: number; sw: number };
+    speakers: { name: string; clk: number; dt: number; sw: number };
+  };
+  buttons: {
+    page: number;
+    action: number;
+    source: number;
+  };
+}
+
+export interface WifiStatus {
+  connected: boolean;
+  interface?: string;
+  ip: string;
+  ssid?: string;
+  signal?: number;
+  isHotspot?: boolean;
+  online?: boolean;
+}
+
+export interface WifiNetwork {
+  ssid: string;
+  signal: number;
+  security: string;
+  inUse: boolean;
+}

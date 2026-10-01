@@ -23,6 +23,7 @@ echo -e "${CYAN}========================================================${NC}"
 echo ""
 echo -e "${YELLOW}[1/4] Stopping background services...${NC}"
 systemctl --user stop analogair-capture.service analogair-daemon.service analogair-web.service 2>/dev/null || true
+sudo systemctl stop analogair-deadstream.service 2>/dev/null || true
 echo "Services stopped safely."
 
 # 2. Pull down a clean copy of the folder from GitHub
@@ -53,6 +54,8 @@ echo ""
 echo -e "${YELLOW}[4/4] Reloading systemd and restarting services...${NC}"
 systemctl --user daemon-reload
 systemctl --user restart analogair-capture.service analogair-daemon.service analogair-web.service
+sudo systemctl daemon-reload 2>/dev/null || true
+sudo systemctl restart analogair-deadstream.service 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}========================================================${NC}"

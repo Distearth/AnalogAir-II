@@ -76,7 +76,7 @@ export default function App() {
   const [settings, setSettings] = useState<SystemPreferences>(defaultSettings);
 
   const [isControlsOpen, setIsControlsOpen] = useState(false);
-  const [controlsTab, setControlsTab] = useState<'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'settings'>('quick');
+  const [controlsTab, setControlsTab] = useState<'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'hardware' | 'settings'>('quick');
   const [isMetadataEditorOpen, setIsMetadataEditorOpen] = useState(false);
   const [lastActivityTimestamp, setLastActivityTimestamp] = useState<number>(Date.now());
 

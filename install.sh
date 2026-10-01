@@ -57,6 +57,9 @@ CONF_IDLE_ALBUM="${CONF_IDLE_ALBUM:-AT-LP60X Turntable}"
 read -p "Idle Stream Title [AnalogAir Vinyl]: " CONF_IDLE_TITLE
 CONF_IDLE_TITLE="${CONF_IDLE_TITLE:-AnalogAir Vinyl}"
 
+read -p "Do you have a Deadstream hardware board (ST7735 screen, 3 knobs & buttons) installed? [y/N]: " CONF_DEADSTREAM
+CONF_DEADSTREAM="${CONF_DEADSTREAM:-n}"
+
 # 3. Audio Device Detection
 echo ""
 echo -e "${YELLOW}[2/7] Detecting Audio Capture Hardware${NC}"
@@ -3551,6 +3554,15 @@ cat << SUDOEOF | sudo tee /etc/sudoers.d/analogair-power >/dev/null
 $CONF_USER ALL=(ALL) NOPASSWD: /bin/systemctl poweroff, /bin/systemctl reboot, /bin/systemctl restart owntone, /bin/systemctl restart owntone.service, /bin/systemctl stop owntone, /bin/systemctl stop owntone.service, /sbin/shutdown, /sbin/poweroff, /sbin/reboot, /usr/local/bin/analogair-pre-shutdown.sh
 SUDOEOF
 sudo chmod 0440 /etc/sudoers.d/analogair-power
+
+# 5. Optional Deadstream Hardware Setup
+if [[ "$CONF_DEADSTREAM" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo -e "${YELLOW}Setting up Deadstream hardware display & rotary controls...${NC}"
+    if [ -f "$SCRIPT_DIR/scripts/setup_deadstream.sh" ]; then
+        bash "$SCRIPT_DIR/scripts/setup_deadstream.sh" || true
+    fi
+fi
 
 # Trigger OwnTone library rescan to index the pipe
 curl -s -X POST http://127.0.0.1:3689/api/library/rescan 2>/dev/null || true

@@ -1808,6 +1808,88 @@ async def download_web_script(request):
         )
     return web.Response(status=404)
 
+# --- 10. Wi-Fi Management & Deadstream Hardware ---
+async def get_wifi_status(request):
+    try:
+        import analogair_wifi
+        return web.json_response(analogair_wifi.get_wifi_status())
+    except Exception:
+        return web.json_response({
+            "connected": True,
+            "interface": "wlan0",
+            "ip": "127.0.0.1",
+            "ssid": "Local Network",
+            "signal": 100,
+            "isHotspot": False,
+            "online": True
+        })
+
+async def scan_wifi(request):
+    try:
+        import analogair_wifi
+        loop = asyncio.get_event_loop()
+        networks = await loop.run_in_executor(None, analogair_wifi.scan_wifi_networks)
+        return web.json_response({"networks": networks})
+    except Exception:
+        return web.json_response({"networks": []})
+
+async def connect_wifi(request):
+    try:
+        import analogair_wifi
+        body = await request.json()
+        ssid = body.get("ssid", "")
+        password = body.get("password", "")
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, analogair_wifi.connect_wifi, ssid, password)
+        return web.json_response(res)
+    except Exception as e:
+        return web.json_response({"success": False, "error": str(e)})
+
+async def start_hotspot(request):
+    try:
+        import analogair_wifi
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, analogair_wifi.start_setup_hotspot)
+        return web.json_response(res)
+    except Exception as e:
+        return web.json_response({"success": False, "error": str(e)})
+
+async def get_deadstream_status(request):
+    deadstream_cfg = CONFIG_DIR / "deadstream.json"
+    cfg = {}
+    if deadstream_cfg.exists():
+        try:
+            with open(deadstream_cfg, "r") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+    is_active = False
+    try:
+        res = subprocess.run(["systemctl", "is-active", "analogair-deadstream.service"],
+                             stdout=subprocess.PIPE, text=True, timeout=2)
+        is_active = (res.stdout.strip() == "active")
+    except Exception:
+        pass
+    return web.json_response({
+        "installed": (CONFIG_DIR / "analogair_deadstream.py").exists(),
+        "active": is_active,
+        "config": cfg
+    })
+
+async def save_deadstream_config(request):
+    try:
+        body = await request.json()
+        deadstream_cfg = CONFIG_DIR / "deadstream.json"
+        with open(deadstream_cfg, "w") as f:
+            json.dump(body, f, indent=2)
+        try:
+            subprocess.run(["systemctl", "restart", "analogair-deadstream.service"], timeout=5)
+        except Exception:
+            pass
+        return web.json_response({"success": True, "config": body})
+    except Exception as e:
+        return web.json_response({"success": False, "error": str(e)}, status=500)
+
 # --- 11. Static & SPA Serving ---
 async def serve_asset(request):
     filename = request.match_info.get("filename", "")
@@ -1932,6 +2014,14 @@ def main():
     app.router.add_get('/api/installer/update-script', download_update_script)
     app.router.add_get('/api/installer/daemon', download_daemon_script)
     app.router.add_get('/api/installer/web', download_web_script)
+
+    # 9. Wi-Fi & Deadstream Hardware Management
+    app.router.add_get('/api/wifi/status', get_wifi_status)
+    app.router.add_get('/api/wifi/scan', scan_wifi)
+    app.router.add_post('/api/wifi/connect', connect_wifi)
+    app.router.add_post('/api/wifi/hotspot', start_hotspot)
+    app.router.add_get('/api/deadstream/status', get_deadstream_status)
+    app.router.add_post('/api/deadstream/config', save_deadstream_config)
 
     # 10. Static assets with intelligent image failover
     app.router.add_get('/assets/{filename:.*}', serve_asset)

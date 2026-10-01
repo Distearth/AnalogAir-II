@@ -39,7 +39,10 @@ import {
   RefreshCw,
   Monitor,
   HardDrive,
-  Power
+  Power,
+  Wifi,
+  QrCode,
+  CheckCircle2
 } from 'lucide-react';
 import {
   NowPlayingState,
@@ -47,7 +50,10 @@ import {
   OwnToneOutput,
   PlaySession,
   SystemPreferences,
-  ReleaseOverride
+  ReleaseOverride,
+  WifiStatus,
+  WifiNetwork,
+  DeadstreamConfig
 } from '../types';
 import { ToneVisualizer } from './ToneVisualizer';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -60,8 +66,8 @@ interface ControlsOverlayProps {
   outputs: OwnToneOutput[];
   sessions: PlaySession[];
   settings: SystemPreferences;
-  initialTab?: 'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'settings';
-  onTabChange?: (tab: 'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'settings') => void;
+  initialTab?: 'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'hardware' | 'settings';
+  onTabChange?: (tab: 'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'hardware' | 'settings') => void;
   onUpdateTone: (newTone: Partial<ToneControls>, immediate?: boolean) => void;
   onToggleOutput: (id: string) => void;
   onUpdateOutputVolume: (id: string, vol: number) => void;
@@ -95,7 +101,7 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
   onDeleteSession,
   onPurgeBuffer
 }) => {
-  const [activeTab, setActiveTab] = useState<'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'settings'>(initialTab || 'quick');
+  const [activeTab, setActiveTab] = useState<'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'hardware' | 'settings'>(initialTab || 'quick');
 
   React.useEffect(() => {
     if (initialTab && isOpen) {
@@ -103,7 +109,7 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
     }
   }, [initialTab, isOpen]);
 
-  const handleTabClick = (tab: 'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'settings') => {
+  const handleTabClick = (tab: 'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'hardware' | 'settings') => {
     setActiveTab(tab);
     if (onTabChange) onTabChange(tab);
   };
@@ -116,6 +122,94 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
   const [isPurgingStream, setIsPurgingStream] = useState(false);
   const [purgeFeedback, setPurgeFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Hardware & Wi-Fi State
+  const [deadstreamStatus, setDeadstreamStatus] = useState<{ installed: boolean; active: boolean; config: any } | null>(null);
+  const [wifiStatus, setWifiStatus] = useState<WifiStatus | null>(null);
+  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>([]);
+  const [isScanningWifi, setIsScanningWifi] = useState(false);
+  const [selectedSsid, setSelectedSsid] = useState('');
+  const [wifiPassword, setWifiPassword] = useState('');
+  const [isConnectingWifi, setIsConnectingWifi] = useState(false);
+  const [wifiFeedback, setWifiFeedback] = useState<string | null>(null);
+  const [hotspotInfo, setHotspotInfo] = useState<any>(null);
+
+  const fetchDeadstreamAndWifi = async () => {
+    try {
+      const [resHw, resWifi] = await Promise.all([
+        fetch('/api/deadstream/status'),
+        fetch('/api/wifi/status')
+      ]);
+      if (resHw.ok) setDeadstreamStatus(await resHw.json());
+      if (resWifi.ok) setWifiStatus(await resWifi.json());
+    } catch {
+      // ignore
+    }
+  };
+
+  React.useEffect(() => {
+    if (activeTab === 'hardware' && isOpen) {
+      fetchDeadstreamAndWifi();
+    }
+  }, [activeTab, isOpen]);
+
+  const handleScanWifi = async () => {
+    setIsScanningWifi(true);
+    setWifiFeedback(null);
+    try {
+      const res = await fetch('/api/wifi/scan');
+      if (res.ok) {
+        const data = await res.json();
+        setWifiNetworks(data.networks || []);
+      }
+    } catch {
+      setWifiFeedback('Failed to scan networks');
+    } finally {
+      setIsScanningWifi(false);
+    }
+  };
+
+  const handleConnectWifi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedSsid) return;
+    setIsConnectingWifi(true);
+    setWifiFeedback(`Connecting to "${selectedSsid}"...`);
+    try {
+      const res = await fetch('/api/wifi/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ssid: selectedSsid, password: wifiPassword })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWifiFeedback(`Connected successfully to ${selectedSsid}!`);
+        if (data.status) setWifiStatus(data.status);
+        setWifiPassword('');
+        setSelectedSsid('');
+      } else {
+        setWifiFeedback(`Connection failed: ${data.error || 'Check password'}`);
+      }
+    } catch {
+      setWifiFeedback('Error connecting to network');
+    } finally {
+      setIsConnectingWifi(false);
+    }
+  };
+
+  const handleSpawnHotspot = async () => {
+    try {
+      setWifiFeedback('Starting setup hotspot...');
+      const res = await fetch('/api/wifi/hotspot', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setHotspotInfo(data);
+        setWifiFeedback(`Hotspot active: "${data.ssid}"`);
+        fetchDeadstreamAndWifi();
+      }
+    } catch {
+      setWifiFeedback('Failed to activate hotspot');
+    }
+  };
 
   const handlePurgeBuffers = async () => {
     if (isPurgingStream) return;
@@ -328,7 +422,16 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
             <span className="text-emerald-400">Update AnalogAir</span>
           </button>
           <button
-            onClick={() => setActiveTab('settings')}
+            onClick={() => handleTabClick('hardware')}
+            className={`py-3 px-4 border-b-2 transition-colors flex items-center gap-2 ${
+              activeTab === 'hardware' ? 'border-amber-500 text-amber-400 bg-amber-500/5' : 'border-transparent text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <Cpu className="w-4 h-4 text-amber-400" />
+            <span>Deadstream & Wi-Fi</span>
+          </button>
+          <button
+            onClick={() => handleTabClick('settings')}
             className={`py-3 px-4 border-b-2 transition-colors flex items-center gap-2 ${
               activeTab === 'settings' ? 'border-amber-500 text-amber-400 bg-amber-500/5' : 'border-transparent text-neutral-400 hover:text-neutral-200'
             }`}
@@ -1754,6 +1857,254 @@ export const ControlsOverlay: React.FC<ControlsOverlayProps> = ({
                     <option value={45}>45 Minutes</option>
                     <option value={0}>Never Dim (Always On)</option>
                   </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: DEADSTREAM HARDWARE & WI-FI SETUP */}
+          {activeTab === 'hardware' && (
+            <div className="space-y-6 animate-in fade-in duration-150">
+              {/* Hardware Status Banner */}
+              <div className="p-5 bg-neutral-950/70 border border-neutral-800 rounded-2xl space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+                      <Cpu className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>Deadstream Hardware Controller</span>
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          ST7735 128x160 TFT Ready
+                        </span>
+                      </h3>
+                      <p className="text-xs text-neutral-400">
+                        Repurposing the Grateful Dead Time Machine PCB with 3 knobs, push-switches & buttons
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => copyCommand('bash scripts/setup_deadstream.sh --test', 'hw-test')}
+                    className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-mono rounded-lg transition-colors flex items-center gap-1.5 self-start sm:self-auto border border-neutral-700"
+                  >
+                    {copiedCmdId === 'hw-test' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Terminal className="w-3.5 h-3.5 text-amber-400" />}
+                    <span>{copiedCmdId === 'hw-test' ? 'Command Copied' : 'Test Hardware (--test)'}</span>
+                  </button>
+                </div>
+
+                {/* 3 Knobs & Buttons Physical Control Map */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                  <div className="p-3.5 bg-neutral-900 border border-neutral-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-amber-400">Knob 1 (Left)</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400">Former Year</span>
+                    </div>
+                    <div className="text-xs text-neutral-200 font-semibold">Master Volume & Mute</div>
+                    <ul className="text-[11px] text-neutral-400 space-y-1">
+                      <li>• <strong className="text-neutral-300">Turn:</strong> Adjust volume (0–100%)</li>
+                      <li>• <strong className="text-neutral-300">Click:</strong> Mute / Unmute instantly</li>
+                      <li>• <strong className="text-neutral-300">Hold (1.5s):</strong> Purge 30s FIFO pipe</li>
+                    </ul>
+                  </div>
+
+                  <div className="p-3.5 bg-neutral-900 border border-neutral-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-amber-400">Knob 2 (Center)</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400">Former Month</span>
+                    </div>
+                    <div className="text-xs text-neutral-200 font-semibold">Tone DSP & Phono Gain</div>
+                    <ul className="text-[11px] text-neutral-400 space-y-1">
+                      <li>• <strong className="text-neutral-300">Turn:</strong> Boost / Cut EQ (±12 dB)</li>
+                      <li>• <strong className="text-neutral-300">Click:</strong> Cycle [Bass → Mid → Treb → Gain]</li>
+                      <li>• <strong className="text-neutral-300">Hold (1.5s):</strong> Reset Tone to Flat</li>
+                    </ul>
+                  </div>
+
+                  <div className="p-3.5 bg-neutral-900 border border-neutral-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-amber-400">Knob 3 (Right)</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400">Former Day</span>
+                    </div>
+                    <div className="text-xs text-neutral-200 font-semibold">Speakers & Wi-Fi Navigation</div>
+                    <ul className="text-[11px] text-neutral-400 space-y-1">
+                      <li>• <strong className="text-neutral-300">Turn:</strong> Scroll speakers or networks</li>
+                      <li>• <strong className="text-neutral-300">Click:</strong> Toggle connect / disconnect</li>
+                      <li>• <strong className="text-neutral-300">Hold (1.5s):</strong> Toggle Auto-Connect</li>
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Tactile Buttons Reference */}
+                <div className="p-3 bg-neutral-900/60 border border-neutral-800/80 rounded-xl flex flex-wrap gap-4 text-xs">
+                  <div>
+                    <span className="font-bold text-neutral-300">Button 1 (Page):</span>
+                    <span className="text-neutral-400 ml-1">Cycle LCD screens (Now Playing → Speakers → Tone DSP → Wi-Fi)</span>
+                  </div>
+                  <div>
+                    <span className="font-bold text-neutral-300">Button 2 (Action):</span>
+                    <span className="text-neutral-400 ml-1">Trigger instant Shazam re-identification</span>
+                  </div>
+                  <div>
+                    <span className="font-bold text-neutral-300">Button 3 (Source):</span>
+                    <span className="text-neutral-400 ml-1">Cycle source (Vinyl → Tape → CD → Aux)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Wi-Fi & Offline Failover Card */}
+              <div className="p-5 bg-neutral-950/70 border border-neutral-800 rounded-2xl space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center">
+                      <Wifi className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>Wi-Fi Network & Hotspot Failover</span>
+                        {wifiStatus?.connected ? (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            Connected ({wifiStatus.ssid})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                            Disconnected / Setup Mode
+                          </span>
+                        )}
+                      </h3>
+                      <p className="text-xs text-neutral-400">
+                        Zero-hassle boot in new locations with automatic Hotspot & ST7735 QR Code
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleSpawnHotspot}
+                      className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs rounded-lg transition-colors flex items-center gap-1.5 border border-neutral-700"
+                    >
+                      <QrCode className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Start Setup Hotspot</span>
+                    </button>
+                    <button
+                      onClick={handleScanWifi}
+                      disabled={isScanningWifi}
+                      className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 border border-amber-500/30"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isScanningWifi ? 'animate-spin' : ''}`} />
+                      <span>{isScanningWifi ? 'Scanning...' : 'Scan Wi-Fi'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Hotspot details banner */}
+                <div className="p-3.5 bg-blue-950/20 border border-blue-900/30 rounded-xl text-xs space-y-1">
+                  <div className="flex items-center gap-2 font-semibold text-blue-300">
+                    <QrCode className="w-4 h-4 text-blue-400" />
+                    <span>How Offline Wi-Fi Setup Works in New Locations:</span>
+                  </div>
+                  <p className="text-neutral-300">
+                    If you take your AnalogAir Pi to a friend's house or audio show without your home Wi-Fi:
+                  </p>
+                  <ol className="list-decimal list-inside text-neutral-400 space-y-0.5 pt-1">
+                    <li>The Deadstream ST7735 screen automatically detects no connection and displays a <strong className="text-white">Wi-Fi QR Code</strong>.</li>
+                    <li>Point your smartphone camera at the screen to instantly connect to hotspot <strong className="text-amber-400">AnalogAir-Setup</strong> (password: <code className="text-neutral-300">analogair</code>).</li>
+                    <li>Open <code className="text-neutral-300">http://192.168.4.1:3000</code> to pick the venue's Wi-Fi network and connect.</li>
+                    <li><strong className="text-neutral-200">No smartphone?</strong> Use <strong className="text-white">Knob 3</strong> to scroll SSIDs and <strong className="text-white">Knob 1</strong> to dial the password directly on the screen!</li>
+                  </ol>
+                </div>
+
+                {wifiFeedback && (
+                  <div className="p-2.5 bg-neutral-900 border border-neutral-700 rounded-lg text-xs text-amber-300 font-mono">
+                    {wifiFeedback}
+                  </div>
+                )}
+
+                {/* Scanned Networks List & Connect Form */}
+                {wifiNetworks.length > 0 && (
+                  <div className="space-y-3 pt-2">
+                    <h4 className="text-xs font-bold text-neutral-300 uppercase tracking-wider">
+                      Available Networks ({wifiNetworks.length})
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                      {wifiNetworks.map((net) => (
+                        <div
+                          key={net.ssid}
+                          onClick={() => setSelectedSsid(net.ssid)}
+                          className={`p-2.5 rounded-xl border cursor-pointer transition-colors flex items-center justify-between text-xs ${
+                            selectedSsid === net.ssid
+                              ? 'bg-amber-500/10 border-amber-500/50 text-white'
+                              : 'bg-neutral-900 border-neutral-800 text-neutral-300 hover:border-neutral-700'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <Wifi className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                            <span className="font-medium truncate">{net.ssid}</span>
+                          </div>
+                          <span className="text-[10px] font-mono text-neutral-500 shrink-0">
+                            {net.signal}% • {net.security}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {selectedSsid && (
+                      <form onSubmit={handleConnectWifi} className="flex flex-col sm:flex-row gap-2 pt-2">
+                        <input
+                          type="text"
+                          readOnly
+                          value={selectedSsid}
+                          className="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl text-xs text-neutral-300 sm:w-1/3"
+                        />
+                        <input
+                          type="password"
+                          placeholder="Wi-Fi Password..."
+                          value={wifiPassword}
+                          onChange={(e) => setWifiPassword(e.target.value)}
+                          className="p-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-xs text-white flex-1 focus:outline-none focus:border-amber-500"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isConnectingWifi}
+                          className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs rounded-xl transition-colors shrink-0"
+                        >
+                          {isConnectingWifi ? 'Connecting...' : 'Connect to Network'}
+                        </button>
+                      </form>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Pinout & Diagnostics Reference */}
+              <div className="p-4 bg-neutral-950/70 border border-neutral-800 rounded-2xl text-xs space-y-2">
+                <div className="font-bold text-neutral-300 flex items-center justify-between">
+                  <span>Deadstream PCB Standard Pinout (Raspberry Pi Header)</span>
+                  <span className="text-[11px] text-neutral-500 font-mono">Config: ~/.config/analogair/deadstream.json</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+                  <div className="p-2 bg-neutral-900 rounded border border-neutral-800">
+                    <div className="text-amber-400 font-bold">ST7735 TFT</div>
+                    <div>SPI0 (MOSI 10, SCLK 11)</div>
+                    <div>DC: GPIO 25 | RST: 27</div>
+                  </div>
+                  <div className="p-2 bg-neutral-900 rounded border border-neutral-800">
+                    <div className="text-amber-400 font-bold">Knob 1 (Volume)</div>
+                    <div>CLK: 17 | DT: 27</div>
+                    <div>Switch: GPIO 22</div>
+                  </div>
+                  <div className="p-2 bg-neutral-900 rounded border border-neutral-800">
+                    <div className="text-amber-400 font-bold">Knob 2 (Tone)</div>
+                    <div>CLK: 5 | DT: 6</div>
+                    <div>Switch: GPIO 13</div>
+                  </div>
+                  <div className="p-2 bg-neutral-900 rounded border border-neutral-800">
+                    <div className="text-amber-400 font-bold">Knob 3 (Speakers)</div>
+                    <div>CLK: 19 | DT: 26</div>
+                    <div>Switch: GPIO 4</div>
+                  </div>
                 </div>
               </div>
             </div>

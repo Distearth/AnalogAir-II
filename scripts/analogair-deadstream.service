@@ -1,0 +1,22 @@
+[Unit]
+Description=AnalogAir Deadstream Hardware Display & Rotary Controller
+Documentation=https://github.com/eichblatt/deadstream
+After=network.target sound.target analogair-web.service
+Wants=analogair-web.service
+
+[Service]
+Type=simple
+User=analogair
+Group=analogair
+WorkingDirectory=/home/analogair/.config/analogair
+ExecStart=/home/analogair/.config/analogair/venv/bin/python3 /home/analogair/.config/analogair/analogair_deadstream.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# Hardware access permissions (SPI, GPIO)
+SupplementaryGroups=spi gpio dialout audio
+
+[Install]
+WantedBy=multi-user.target

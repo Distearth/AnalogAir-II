@@ -1302,7 +1302,98 @@ app.get('/api/artwork/AnalogAir.jpg', (req, res) => {
   res.status(404).send('AnalogAir.jpg not generated yet');
 });
 
-// 10. Downloadable Install Script, Desktop Launcher & System Files
+// 10. Wi-Fi Management & Deadstream Hardware Endpoints
+let mockWifi = {
+  connected: true,
+  interface: 'wlan0',
+  ip: '192.168.1.142',
+  ssid: 'VinylLover-5G',
+  signal: 88,
+  isHotspot: false,
+  online: true
+};
+
+const mockNetworks = [
+  { ssid: 'VinylLover-5G', signal: 88, security: 'WPA2', inUse: true },
+  { ssid: 'TurntableNet', signal: 74, security: 'WPA2', inUse: false },
+  { ssid: 'LivingRoom-Mesh', signal: 65, security: 'WPA2', inUse: false },
+  { ssid: 'Guest-WiFi', signal: 52, security: 'Open', inUse: false }
+];
+
+app.get('/api/wifi/status', (req, res) => {
+  res.json(mockWifi);
+});
+
+app.get('/api/wifi/scan', (req, res) => {
+  res.json({ networks: mockNetworks });
+});
+
+app.post('/api/wifi/connect', (req, res) => {
+  const { ssid } = req.body;
+  if (!ssid) return res.status(400).json({ success: false, error: 'SSID required' });
+  mockWifi.connected = true;
+  mockWifi.ssid = ssid;
+  mockWifi.isHotspot = false;
+  mockWifi.ip = '192.168.1.142';
+  res.json({ success: true, status: mockWifi });
+});
+
+app.post('/api/wifi/hotspot', (req, res) => {
+  mockWifi.connected = true;
+  mockWifi.isHotspot = true;
+  mockWifi.ssid = 'AnalogAir-Setup';
+  mockWifi.ip = '192.168.4.1';
+  res.json({
+    success: true,
+    isHotspot: true,
+    ssid: 'AnalogAir-Setup',
+    password: 'analogair',
+    portalUrl: 'http://192.168.4.1:3000'
+  });
+});
+
+let deadstreamConfig = {
+  enabled: true,
+  model: 'Grateful Dead Time Machine (PCB)',
+  display: {
+    width: 160,
+    height: 128,
+    rotation: 90,
+    spi_port: 0,
+    spi_cs: 0,
+    dc_pin: 25,
+    rst_pin: 27,
+    bl_pin: 18,
+    brightness: 100
+  },
+  knobs: {
+    volume: { name: 'Volume (Left)', clk: 17, dt: 27, sw: 22 },
+    tone: { name: 'Tone DSP (Center)', clk: 5, dt: 6, sw: 13 },
+    speakers: { name: 'Speakers / Wi-Fi (Right)', clk: 19, dt: 26, sw: 4 }
+  },
+  buttons: {
+    page: 2,
+    action: 3,
+    source: 14
+  }
+};
+
+app.get('/api/deadstream/status', (req, res) => {
+  res.json({
+    installed: true,
+    active: true,
+    config: deadstreamConfig
+  });
+});
+
+app.post('/api/deadstream/config', (req, res) => {
+  if (req.body) {
+    deadstreamConfig = { ...deadstreamConfig, ...req.body };
+  }
+  res.json({ success: true, config: deadstreamConfig });
+});
+
+// 11. Downloadable Install Script, Desktop Launcher & System Files
 app.get('/api/installer/desktop-shortcut', (req, res) => {
   const host = req.get('host') || 'localhost:3000';
   const desktopFile = `[Desktop Entry]
