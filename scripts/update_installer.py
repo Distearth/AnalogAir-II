@@ -1,0 +1,697 @@
+#!/usr/bin/env python3
+"""
+Helper script to sync the latest scripts/analogair_daemon.py, scripts/analogair_web.py,
+and dist/ web UI bundle into install.sh.
+"""
+import base64
+import gzip
+import io
+import os
+import tarfile
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def main():
+    daemon_path = os.path.join(ROOT_DIR, "scripts", "analogair_daemon.py")
+    web_path = os.path.join(ROOT_DIR, "scripts", "analogair_web.py")
+    dist_dir = os.path.join(ROOT_DIR, "dist")
+
+    with open(daemon_path, "r", encoding="utf-8") as f:
+        daemon_code = f.read()
+
+    with open(web_path, "r", encoding="utf-8") as f:
+        web_code = f.read()
+
+    # Locate dist assets (HTML, CSS, JS)
+    js_files = [f for f in os.listdir(os.path.join(dist_dir, "assets")) if f.endswith(".js")]
+    css_files = [f for f in os.listdir(os.path.join(dist_dir, "assets")) if f.endswith(".css")]
+    
+    js_filename = js_files[0]
+    css_filename = css_files[0]
+
+    with open(os.path.join(dist_dir, "index.html"), "rb") as f:
+        b64_html = base64.b64encode(gzip.compress(f.read(), 9)).decode("ascii")
+
+    with open(os.path.join(dist_dir, "assets", js_filename), "rb") as f:
+        b64_js = base64.b64encode(gzip.compress(f.read(), 9)).decode("ascii")
+
+    with open(os.path.join(dist_dir, "assets", css_filename), "rb") as f:
+        b64_css = base64.b64encode(gzip.compress(f.read(), 9)).decode("ascii")
+
+    installer_content = f'''#!/bin/bash
+# ==============================================================================
+# AnalogAir - Smart Vinyl Audio Streamer & AirPlay Display
+# Automated Setup & Dependency Installer for Raspberry Pi
+# ==============================================================================
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+
+# ANSI Color Codes
+GREEN='\\033[0;32m'
+BLUE='\\033[0;34m'
+YELLOW='\\033[1;33m'
+RED='\\033[0;31m'
+CYAN='\\033[0;36m'
+NC='\\033[0m'
+
+clear
+cat << "BANNER"
+    _                  _                 _     _      
+   / \\   _ __   __ _  | | ___   __ _    / \\   (_)_ __ 
+  / _ \\ | \'_ \\ / _` | | |/ _ \\ / _` |  / _ \\  | | \'__|
+ / ___ \\| | | | (_| | | | (_) | (_| | / ___ \\ | | |   
+/_/   \\_\\_| |_|\\__,_| |_|\\___/ \\__, |/_/   \\_\\|_|_|   
+                               |___/                  
+BANNER
+
+echo -e "${{GREEN}}AnalogAir Smart Vinyl Audio Streamer Setup Wizard${{NC}}"
+echo "--------------------------------------------------------"
+
+# 1. Root check
+if [ "$EUID" -eq 0 ]; then
+  echo -e "${{RED}}Please run this script as your regular user (e.g., analogair or pi), NOT as root or with sudo.${{NC}}"
+  echo "The installer will prompt for sudo when required."
+  exit 1
+fi
+
+CURRENT_USER="$(whoami)"
+USER_HOME="$HOME"
+
+# 2. Interactive Questions
+echo ""
+echo -e "${{YELLOW}}[1/7] Configuration Setup${{NC}}"
+read -p "Install for user [$CURRENT_USER]: " CONF_USER
+CONF_USER="${{CONF_USER:-$CURRENT_USER}}"
+
+DEFAULT_MUSIC_DIR="/home/$CONF_USER/Music"
+read -p "Path to OwnTone Music directory [$DEFAULT_MUSIC_DIR]: " CONF_MUSIC_DIR
+CONF_MUSIC_DIR="${{CONF_MUSIC_DIR:-$DEFAULT_MUSIC_DIR}}"
+
+read -p "Idle Artist Name displayed on AirPlay [Audio-Technica]: " CONF_IDLE_ARTIST
+CONF_IDLE_ARTIST="${{CONF_IDLE_ARTIST:-Audio-Technica}}"
+
+read -p "Idle Album Name displayed on AirPlay [AT-LP60X Turntable]: " CONF_IDLE_ALBUM
+CONF_IDLE_ALBUM="${{CONF_IDLE_ALBUM:-AT-LP60X Turntable}}"
+
+read -p "Idle Stream Title [AnalogAir Vinyl]: " CONF_IDLE_TITLE
+CONF_IDLE_TITLE="${{CONF_IDLE_TITLE:-AnalogAir Vinyl}}"
+
+# 3. Audio Device Detection
+echo ""
+echo -e "${{YELLOW}}[2/7] Detecting Audio Capture Hardware${{NC}}"
+echo "Searching for connected USB audio input devices..."
+arecord -l || true
+echo ""
+echo "Enter your USB capture card ALSA name or leave blank for default PipeWire source (@DEFAULT_SOURCE@):"
+read -p "Capture device name or card ID [@DEFAULT_SOURCE@]: " CONF_AUDIO_DEV
+CONF_AUDIO_DEV="${{CONF_AUDIO_DEV:-@DEFAULT_SOURCE@}}"
+
+# 4. System Packages Installation
+echo ""
+echo -e "${{YELLOW}}[3/7] Setting up OwnTone Repository & Dependencies${{NC}}"
+
+sudo apt-get update
+sudo apt-get install -y curl wget gnupg lsb-release sqlite3
+
+# Add official OwnTone APT repository and keyring (supports Debian Trixie, Bookworm & Bullseye)
+echo "Adding official OwnTone repository & GPG keyring..."
+sudo mkdir -p /usr/share/keyrings
+wget -q -O - https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone.gpg | sudo gpg --dearmor --yes -o /usr/share/keyrings/owntone-archive-keyring.gpg
+
+DIST=$(lsb_release -cs 2>/dev/null || echo "trixie")
+if [ "$DIST" != "trixie" ] && [ "$DIST" != "bookworm" ] && [ "$DIST" != "bullseye" ]; then
+  DIST="trixie"
+fi
+sudo wget -q -O /etc/apt/sources.list.d/owntone.list "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone-${{DIST}}.list"
+
+# Refresh repos and install packages
+sudo apt-get update
+sudo apt-get install -y \\
+  owntone \\
+  pipewire \\
+  pipewire-audio-client-libraries \\
+  pipewire-pulse \\
+  wireplumber \\
+  alsa-utils \\
+  ffmpeg \\
+  python3 \\
+  python3-pip \\
+  python3-venv \\
+  python3-numpy \\
+  python3-pil \\
+  python3-gpiozero \\
+  python3-rpi.gpio \\
+  pulseaudio-utils \\
+  pavucontrol \\
+  libportaudio2 \\
+  portaudio19-dev \\
+  git \\
+  curl \\
+  avahi-daemon
+
+# Ensure systemd journal directory exists and user has read access to journal logs
+sudo mkdir -p /var/log/journal
+sudo systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+sudo usermod -a -G systemd-journal,audio "$CONF_USER" 2>/dev/null || true
+
+# 5. Configure OwnTone Server (/etc/owntone.conf)
+echo ""
+echo -e "${{YELLOW}}[4/7] Configuring OwnTone Server (/etc/owntone.conf)${{NC}}"
+
+PIPE_DIR="$CONF_MUSIC_DIR/AnalogAir"
+mkdir -p "$PIPE_DIR"
+mkdir -p "$USER_HOME/.config/analogair"
+mkdir -p "$USER_HOME/.config/pipewire/filter-chain.conf.d"
+
+# Backup original config if present
+if [ -f /etc/owntone.conf ] && [ ! -f /etc/owntone.conf.original ]; then
+  sudo cp /etc/owntone.conf /etc/owntone.conf.original
+fi
+
+# Ensure user and music directories have appropriate traverse permissions for OwnTone
+sudo chmod 755 "$USER_HOME"
+sudo chmod 755 "$CONF_MUSIC_DIR"
+sudo chmod -R 777 "$PIPE_DIR"
+
+# Write OwnTone configuration matching working vinyl pipe setup
+sudo tee /etc/owntone.conf > /dev/null << CONFEOF
+# OwnTone configuration generated by AnalogAir Setup Wizard
+general {{
+	uid = "root"
+	db_path = "/var/cache/owntone/songs3.db"
+	logfile = "/var/log/owntone.log"
+	loglevel = log
+	admin_password = ""
+	trusted_networks = {{ "localhost", "192.168", "86.0", "10.0", "fd", "lan" }}
+	start_buffer_ms = 1000
+}}
+
+library {{
+	name = "AnalogAir on %h"
+	port = 3689
+	directories = {{ "$CONF_MUSIC_DIR", "$PIPE_DIR" }}
+	name_unknown_artist = "$CONF_IDLE_ARTIST"
+	name_unknown_album = "$CONF_IDLE_ALBUM"
+	artwork_basenames = {{ "artwork", "cover", "Folder", "AnalogAir", "AnalogAir_default" }}
+	artwork_individual = true
+	pipe_autostart = true
+}}
+
+audio {{
+	nickname = "AnalogAir Streamer"
+}}
+CONFEOF
+
+echo "Restarting OwnTone service with updated configuration..."
+sudo systemctl restart owntone
+
+# 6. Create Named Pipes & Virtual Audio Engine
+echo ""
+echo -e "${{YELLOW}}[5/7] Creating Named Pipes & Virtual Audio Engine${{NC}}"
+
+mkfifo "$PIPE_DIR/AnalogAir" 2>/dev/null || true
+mkfifo "$PIPE_DIR/AnalogAir.metadata" 2>/dev/null || true
+chmod 666 "$PIPE_DIR/AnalogAir" "$PIPE_DIR/AnalogAir.metadata" 2>/dev/null || true
+
+# Copy default standby artwork to AnalogAir_default.jpg and live AnalogAir.jpg
+python3 -c "
+from PIL import Image, ImageDraw
+import os
+path = '$PIPE_DIR/AnalogAir_default.jpg'
+if not os.path.exists(path):
+    img = Image.new('RGB', (1000, 1000), color='#121216')
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([100, 100, 900, 900], outline='#2a2a32', width=8)
+    draw.ellipse([250, 250, 750, 750], outline='#222228', width=6)
+    draw.ellipse([400, 400, 600, 600], fill='#d97706')
+    draw.ellipse([480, 480, 520, 520], fill='#121216')
+    img.save(path, 'JPEG', quality=90)
+" 2>/dev/null || true
+cp -f "$PIPE_DIR/AnalogAir_default.jpg" "$PIPE_DIR/AnalogAir.jpg" 2>/dev/null || true
+
+# Initialize AnalogAir SQLite settings
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('$USER_HOME/.config/analogair/settings.db')
+c = conn.cursor()
+c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
+c.execute('CREATE TABLE IF NOT EXISTS favorite_speakers (speaker_id TEXT PRIMARY KEY)')
+c.execute('CREATE TABLE IF NOT EXISTS auto_connect_speakers (speaker_id TEXT PRIMARY KEY)')
+c.execute('CREATE TABLE IF NOT EXISTS overrides (key TEXT PRIMARY KEY, artist TEXT, album TEXT, title TEXT, art_url TEXT)')
+settings = {{
+    'audio_device': '$CONF_AUDIO_DEV',
+    'pipe_dir': '$PIPE_DIR',
+    'music_dir': '$CONF_MUSIC_DIR',
+    'idle_artist': '$CONF_IDLE_ARTIST',
+    'idle_album': '$CONF_IDLE_ALBUM',
+    'idle_title': '$CONF_IDLE_TITLE',
+    'silence_gap': '15',
+    'silence_threshold': '0.0035',
+    'source_type': 'vinyl',
+    'enable_recognition': 'false',
+    'continuous_id': 'false',
+    'input_gain_db': '0.0',
+    'bass_gain_db': '1.5',
+    'mid_gain_db': '0.0',
+    'treble_gain_db': '0.5'
+}}
+for k, v in settings.items():
+    c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (k, v))
+conn.commit()
+conn.close()
+"
+
+# Remove any legacy pipewire tone configuration to prevent filter-chain errors
+rm -f "$USER_HOME/.config/pipewire/filter-chain.conf.d/analogair-tone.conf" 2>/dev/null || true
+
+# 7. Install Python VirtualEnv, Scripts & Web UI
+echo ""
+echo -e "${{YELLOW}}[6/7] Setting up Metadata Daemon & Web UI${{NC}}"
+VENV_PATH="$USER_HOME/.config/analogair/venv"
+python3 -m venv "$VENV_PATH" --system-site-packages
+"$VENV_PATH/bin/pip" install --upgrade pip
+# For Python 3.13+, PEP 594 removed audioop from the standard library.
+# audioop-lts provides the official long-term support build on PyPI for Python 3.13+.
+"$VENV_PATH/bin/pip" install audioop-lts shazamio sounddevice numpy requests pillow aiohttp
+
+# Copy or write AnalogAir Daemon script
+if [ -f "$SCRIPT_DIR/scripts/analogair_daemon.py" ]; then
+    echo "Installing analogair_daemon.py from local repository..."
+    cp -f "$SCRIPT_DIR/scripts/analogair_daemon.py" "$USER_HOME/.config/analogair/analogair_daemon.py"
+else
+    echo "Writing embedded analogair_daemon.py..."
+    cat << 'PYEOF_DAEMON' > "$USER_HOME/.config/analogair/analogair_daemon.py"
+{daemon_code}
+PYEOF_DAEMON
+fi
+chmod +x "$USER_HOME/.config/analogair/analogair_daemon.py"
+
+# Copy or write AnalogAir Web script
+if [ -f "$SCRIPT_DIR/scripts/analogair_web.py" ]; then
+    echo "Installing analogair_web.py from local repository..."
+    cp -f "$SCRIPT_DIR/scripts/analogair_web.py" "$USER_HOME/.config/analogair/analogair_web.py"
+else
+    echo "Writing embedded analogair_web.py..."
+    cat << 'PYEOF_WEB' > "$USER_HOME/.config/analogair/analogair_web.py"
+{web_code}
+PYEOF_WEB
+fi
+chmod +x "$USER_HOME/.config/analogair/analogair_web.py"
+
+# Install Touchscreen Web UI
+mkdir -p "$USER_HOME/.config/analogair/ui"
+mkdir -p "$USER_HOME/.config/analogair/ui/assets"
+if [ -d "$SCRIPT_DIR/dist" ] && [ -f "$SCRIPT_DIR/dist/index.html" ]; then
+    echo "Installing Web UI from local dist folder..."
+    cp -rf "$SCRIPT_DIR/dist/"* "$USER_HOME/.config/analogair/ui/"
+else
+    echo "Installing standalone AnalogAir Touchscreen Web UI..."
+    echo "{b64_html}" | base64 -d | gzip -d > "$USER_HOME/.config/analogair/ui/index.html"
+    echo "{b64_js}" | base64 -d | gzip -d > "$USER_HOME/.config/analogair/ui/assets/{js_filename}"
+    echo "{b64_css}" | base64 -d | gzip -d > "$USER_HOME/.config/analogair/ui/assets/{css_filename}"
+    cp -f "$PIPE_DIR/AnalogAir_default.jpg" "$USER_HOME/.config/analogair/ui/assets/default_vinyl.jpg" 2>/dev/null || true
+    cp -f "$PIPE_DIR/AnalogAir_default.jpg" "$USER_HOME/.config/analogair/ui/assets/default_idle.jpg" 2>/dev/null || true
+    cp -f "$PIPE_DIR/AnalogAir_default.jpg" "$USER_HOME/.config/analogair/ui/assets/default_tape.jpg" 2>/dev/null || true
+    cp -f "$PIPE_DIR/AnalogAir_default.jpg" "$USER_HOME/.config/analogair/ui/assets/default_cd.jpg" 2>/dev/null || true
+fi
+
+# Copy or write Audio Capture Pipe Broker script (with real-time 3-band shelf EQ DSP)
+cat << 'PIPEEOF' > "$USER_HOME/.config/analogair/capture_pipe.sh"
+#!/bin/bash
+MUSIC_DIR="${{1:-$HOME/Music/AnalogAir}}"
+PIPE="$MUSIC_DIR/AnalogAir"
+mkdir -p "$MUSIC_DIR"
+[ -p "$PIPE" ] || mkfifo "$PIPE"
+
+DB="$HOME/.config/analogair/settings.db"
+BASS=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='bass_gain_db';" 2>/dev/null || echo "0")
+MID=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='mid_gain_db';" 2>/dev/null || echo "0")
+TREBLE=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='treble_gain_db';" 2>/dev/null || echo "0")
+SELECTED_DEV=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='audio_device';" 2>/dev/null || echo "")
+
+BASS="${{BASS:-0}}"
+MID="${{MID:-0}}"
+TREBLE="${{TREBLE:-0}}"
+
+EQ_FILTER="bass=g=${{BASS}}:f=100,equalizer=f=1000:width_type=q:w=1:g=${{MID}},treble=g=${{TREBLE}}:f=8000"
+
+ALSA_DEV="default"
+PULSE_DEV="default"
+
+if [ -n "$SELECTED_DEV" ] && [ "$SELECTED_DEV" != "default" ] && [ "$SELECTED_DEV" != "@DEFAULT_SOURCE@" ]; then
+    if [[ "$SELECTED_DEV" =~ ^hw: || "$SELECTED_DEV" =~ ^plughw: ]]; then
+        ALSA_DEV="$SELECTED_DEV"
+    else
+        PULSE_DEV="$SELECTED_DEV"
+    fi
+else
+    ALSA_CARD=$(arecord -l 2>/dev/null | grep -i -E "cx231xx|usb|codec|audio|turntable" | head -n1 | sed -n 's/card \([0-9]\+\):.*/\1/p')
+    if [ -n "$ALSA_CARD" ]; then
+        ALSA_DEV="plughw:$ALSA_CARD,0"
+    fi
+    # Also auto-detect USB turntable / soundcard in PulseAudio / PipeWire
+    if command -v pactl >/dev/null 2>&1; then
+        DETECTED_PULSE=$(pactl list sources short 2>/dev/null | grep -i -E "usb|codec|audio|turntable|cx231xx" | grep -v "\.monitor" | head -n1 | awk '{{print $2}}')
+        if [ -n "$DETECTED_PULSE" ]; then
+            PULSE_DEV="$DETECTED_PULSE"
+        fi
+    fi
+fi
+
+# Filter arguments: bypass -af if all EQ bands are 0 dB (pure bit-perfect pass-through)
+AF_ARGS=()
+if [ "$BASS" != "0" ] && [ "$BASS" != "0.0" ] || [ "$MID" != "0" ] && [ "$MID" != "0.0" ] || [ "$TREBLE" != "0" ] && [ "$TREBLE" != "0.0" ]; then
+    AF_ARGS=(-af "$EQ_FILTER")
+fi
+
+# 1. Primary: FFmpeg with real-time 3-band EQ filter graph
+if command -v ffmpeg >/dev/null 2>&1; then
+    if pactl info >/dev/null 2>&1; then
+        ffmpeg -loglevel error -flush_packets 1 -f pulse -i "$PULSE_DEV" "${{AF_ARGS[@]}}" -f s16le -ar 44100 -ac 2 - > "$PIPE"
+    else
+        ffmpeg -loglevel error -flush_packets 1 -f alsa -i "$ALSA_DEV" "${{AF_ARGS[@]}}" -f s16le -ar 44100 -ac 2 - > "$PIPE"
+    fi
+fi
+
+# 2. PipeWire pw-cat fallback
+if command -v pw-cat >/dev/null 2>&1; then
+    TARGET=""
+    DEV=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='audio_device';" 2>/dev/null || echo "")
+    if [ -n "$DEV" ] && [ "$DEV" != "@DEFAULT_SOURCE@" ] && [ "$DEV" != "default" ]; then
+        TARGET="--target=$DEV"
+    fi
+    exec pw-cat --record $TARGET --format=s16 --rate=44100 --channels=2 --raw - > "$PIPE"
+fi
+
+# 3. ALSA arecord fallback
+if command -v arecord >/dev/null 2>&1; then
+    exec arecord -q -D "$ALSA_DEV" -f S16_LE -r 44100 -c 2 > "$PIPE"
+fi
+PIPEEOF
+chmod +x "$USER_HOME/.config/analogair/capture_pipe.sh"
+
+# 8. Create Systemd User Services
+echo ""
+echo -e "${{YELLOW}}[7/7] Configuring Systemd User Services${{NC}}"
+mkdir -p "$USER_HOME/.config/systemd/user"
+
+# Service 1: Audio Pipe Broker
+cat << SVCEOF > "$USER_HOME/.config/systemd/user/analogair-capture.service"
+[Unit]
+Description=AnalogAir Vinyl Audio Pipe Broker (Glitch-Free Non-Blocking)
+After=pipewire.service wireplumber.service sound.target
+Wants=pipewire.service wireplumber.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'mkdir -p $CONF_MUSIC_DIR/AnalogAir && [ -p $CONF_MUSIC_DIR/AnalogAir/AnalogAir ] || mkfifo $CONF_MUSIC_DIR/AnalogAir/AnalogAir'
+ExecStart=$USER_HOME/.config/analogair/capture_pipe.sh
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+SVCEOF
+
+# Service 2: Metadata Recognition Daemon
+cat << SVCEOF > "$USER_HOME/.config/systemd/user/analogair-daemon.service"
+[Unit]
+Description=AnalogAir Side-Aware Metadata & Artwork Daemon
+After=analogair-capture.service
+Wants=analogair-capture.service
+
+[Service]
+Type=simple
+ExecStart=$VENV_PATH/bin/python3 $USER_HOME/.config/analogair/analogair_daemon.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+SVCEOF
+
+# Service 3: AnalogAir Web UI Server (Port 3000)
+cat << SVCEOF > "$USER_HOME/.config/systemd/user/analogair-web.service"
+[Unit]
+Description=AnalogAir Touchscreen & Mobile Web UI Server (Port 3000)
+After=network.target analogair-daemon.service
+Wants=analogair-daemon.service
+
+[Service]
+Type=simple
+ExecStart=$VENV_PATH/bin/python3 $USER_HOME/.config/analogair/analogair_web.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+SVCEOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now analogair-capture.service
+systemctl --user enable --now analogair-daemon.service
+systemctl --user enable --now analogair-web.service
+
+# Enable lingering so user services keep running on headless boot
+sudo loginctl enable-linger "$CONF_USER"
+
+# 8b. Install Pre-Shutdown Network Killer & Receiver Protection
+# Immediately terminates OwnTone and severs all network links prior to shutdown or reboot,
+# preventing OwnTone from reconnecting or triggering AVR receivers to switch active inputs.
+echo ""
+echo -e "${{YELLOW}}[Safety] Installing Pre-Shutdown Network Killer (/usr/local/bin/analogair-pre-shutdown.sh)...${{NC}}"
+
+cat << 'SHUTDOWNEOF' | sudo tee /usr/local/bin/analogair-pre-shutdown.sh >/dev/null
+#!/bin/bash
+# AnalogAir Pre-Shutdown: Kill network connections and stop OwnTone before shutdown/reboot
+# Prevents OwnTone from reconnecting to AirPlay speakers or waking/switching AVR receiver inputs.
+
+PIDFILE="/tmp/analogair-pre-shutdown.pid"
+if [ -f "$PIDFILE" ]; then
+    exit 0
+fi
+touch "$PIDFILE" 2>/dev/null || true
+
+echo "[AnalogAir] Pre-shutdown: Severing all network links FIRST to prevent speaker reconnect..."
+
+# 1. Drop all non-loopback outbound traffic via iptables immediately
+# Prevents any packet from reaching AirPlay speakers, AVRs, or the LAN
+iptables -I OUTPUT 1 -o lo -j ACCEPT 2>/dev/null || true
+iptables -I OUTPUT 2 -j DROP 2>/dev/null || true
+ip6tables -I OUTPUT 1 -o lo -j ACCEPT 2>/dev/null || true
+ip6tables -I OUTPUT 2 -j DROP 2>/dev/null || true
+
+# 2. Bring down all physical and wireless network interfaces (Ethernet & Wi-Fi)
+for dev_path in /sys/class/net/*; do
+    [ -e "$dev_path" ] || continue
+    dev=$(basename "$dev_path")
+    if [ "$dev" != "lo" ]; then
+        ip link set "$dev" down 2>/dev/null || true
+    fi
+done
+
+# 3. Stop network connection managers immediately
+systemctl stop NetworkManager 2>/dev/null || true
+systemctl stop wpa_supplicant 2>/dev/null || true
+systemctl stop systemd-networkd 2>/dev/null || true
+systemctl stop dhcpcd 2>/dev/null || true
+
+# 4. Terminate AnalogAir background processes to kill any auto-reconnect loops
+pkill -9 -f "analogair_daemon.py" 2>/dev/null || true
+pkill -9 -f "analogair_capture.py" 2>/dev/null || true
+pkill -9 -f "arecord" 2>/dev/null || true
+pkill -9 -f "ffmpeg" 2>/dev/null || true
+
+# Also attempt user service stops across active sessions
+for u in $(who | awk '{{print $1}}' | sort -u); do
+    uid=$(id -u "$u" 2>/dev/null)
+    if [ -n "$uid" ]; then
+        XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user stop analogair-daemon.service analogair-capture.service 2>/dev/null || true
+    fi
+done
+
+# 5. Terminate OwnTone immediately with network already dead (no teardown packets can escape)
+systemctl stop owntone.service 2>/dev/null || true
+systemctl stop owntone 2>/dev/null || true
+pkill -9 owntone 2>/dev/null || true
+
+# 6. Stop Avahi (mDNS / Bonjour) to halt network announcements
+systemctl stop avahi-daemon.service 2>/dev/null || true
+systemctl stop avahi-daemon 2>/dev/null || true
+pkill -9 avahi-daemon 2>/dev/null || true
+
+exit 0
+SHUTDOWNEOF
+sudo chmod +x /usr/local/bin/analogair-pre-shutdown.sh
+
+# Install systemd pre-shutdown service unit
+cat << 'SERVEOF' | sudo tee /etc/systemd/system/analogair-pre-shutdown.service >/dev/null
+[Unit]
+Description=AnalogAir Pre-Shutdown Network Killer & Receiver Protection
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target poweroff.target final.target owntone.service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/analogair-pre-shutdown.sh
+TimeoutStartSec=5
+
+[Install]
+WantedBy=shutdown.target reboot.target halt.target poweroff.target
+SERVEOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable analogair-pre-shutdown.service 2>/dev/null || true
+
+# Also hook into systemd system-shutdown directory for final-stage guarantee
+sudo mkdir -p /lib/systemd/system-shutdown /usr/lib/systemd/system-shutdown 2>/dev/null || true
+sudo cp -f /usr/local/bin/analogair-pre-shutdown.sh /lib/systemd/system-shutdown/analogair-kill-network 2>/dev/null || true
+sudo cp -f /usr/local/bin/analogair-pre-shutdown.sh /usr/lib/systemd/system-shutdown/analogair-kill-network 2>/dev/null || true
+sudo chmod +x /lib/systemd/system-shutdown/analogair-kill-network /usr/lib/systemd/system-shutdown/analogair-kill-network 2>/dev/null || true
+
+# 9. Configure Hardware Power Switch (Physical Pins 5 & 6 / GPIO 3 + GND)
+# Using Howchoo pi-power-button method (https://github.com/Howchoo/pi-power-button)
+echo ""
+echo -e "${{YELLOW}}[Bonus] Configuring Hardware Power Switch (Howchoo Pi Power Button)${{NC}}"
+
+# 1. Clean up previous gpio-shutdown kernel overlay & desktop overrides
+CONFIG_TXT=""
+if [ -f /boot/firmware/config.txt ]; then
+    CONFIG_TXT="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    CONFIG_TXT="/boot/config.txt"
+fi
+
+if [ -n "$CONFIG_TXT" ]; then
+    sudo sed -i '/dtoverlay=gpio-shutdown/d' "$CONFIG_TXT" 2>/dev/null || true
+    sudo sed -i '/# AnalogAir: Instant Hardware Power Switch/d' "$CONFIG_TXT" 2>/dev/null || true
+fi
+
+# Remove previous udev, logind, and pishutdown overrides so standard desktop logout works
+sudo rm -f /etc/udev/rules.d/99-gpio-poweroff.rules 2>/dev/null || true
+sudo rm -f /etc/systemd/system/systemctl-poweroff.service 2>/dev/null || true
+sudo rm -f /etc/systemd/logind.conf.d/analogair-power.conf 2>/dev/null || true
+sudo rm -f /usr/local/bin/pishutdown 2>/dev/null || true
+sudo udevadm control --reload-rules 2>/dev/null || true
+
+# 2. Install Howchoo listen-for-shutdown script
+sudo apt-get install -y python3-gpiozero python3-rpi.gpio 2>/dev/null || true
+
+cat << 'PYEOF' | sudo tee /usr/local/bin/listen-for-shutdown.py >/dev/null
+#!/usr/bin/env python3
+"""
+Howchoo Pi Power Button (listen-for-shutdown.py)
+Source: https://github.com/Howchoo/pi-power-button
+Listens for falling edge on GPIO 3 (Physical Pin 5, paired with GND Pin 6).
+When shorted, performs an immediate clean system shutdown.
+Compatible with Pi 3, 4, 5 and all Raspberry Pi OS releases (Bookworm, Bullseye, Buster).
+"""
+import subprocess
+import sys
+
+def do_shutdown():
+    try:
+        subprocess.call(['/usr/local/bin/analogair-pre-shutdown.sh'])
+    except Exception:
+        pass
+    subprocess.call(['shutdown', '-h', 'now'])
+    sys.exit(0)
+
+# 1. Try gpiozero first (standard on modern Raspberry Pi OS Bookworm & Bullseye)
+try:
+    from gpiozero import Button
+    btn = Button(3, pull_up=True, bounce_time=0.1)
+    btn.wait_for_press()
+    do_shutdown()
+except Exception:
+    pass
+
+# 2. Try RPi.GPIO (standard in Howchoo pi-power-button)
+try:
+    import RPi.GPIO as GPIO
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(3, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.wait_for_edge(3, GPIO.FALLING)
+    do_shutdown()
+except Exception:
+    pass
+
+# 3. Try gpiod
+try:
+    import gpiod
+    chip = gpiod.Chip('gpiochip0')
+    line = chip.get_line(3)
+    line.request(consumer="listen-for-shutdown", type=gpiod.LINE_REQ_EV_FALLING_EDGE)
+    line.event_wait()
+    do_shutdown()
+except Exception:
+    pass
+PYEOF
+sudo chmod +x /usr/local/bin/listen-for-shutdown.py
+
+# 3. Create and enable systemd background service for listen-for-shutdown
+cat << 'SERVEOF' | sudo tee /etc/systemd/system/listen-for-shutdown.service >/dev/null
+[Unit]
+Description=Howchoo Pi Power Button Listener
+After=multi-user.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=2
+ExecStart=/usr/bin/python3 /usr/local/bin/listen-for-shutdown.py
+
+[Install]
+WantedBy=multi-user.target
+SERVEOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now listen-for-shutdown.service 2>/dev/null || true
+
+# 4. Passwordless sudo permissions for clean shutdown, reboot, owntone service, and pre-shutdown script
+cat << SUDOEOF | sudo tee /etc/sudoers.d/analogair-power >/dev/null
+$CONF_USER ALL=(ALL) NOPASSWD: /bin/systemctl poweroff, /bin/systemctl reboot, /bin/systemctl restart owntone, /bin/systemctl restart owntone.service, /bin/systemctl stop owntone, /bin/systemctl stop owntone.service, /sbin/shutdown, /sbin/poweroff, /sbin/reboot, /usr/local/bin/analogair-pre-shutdown.sh
+SUDOEOF
+sudo chmod 0440 /etc/sudoers.d/analogair-power
+
+# Trigger OwnTone library rescan to index the pipe
+curl -s -X POST http://127.0.0.1:3689/api/library/rescan 2>/dev/null || true
+
+PI_IP=$(hostname -I 2>/dev/null | awk '{{print $1}}')
+PI_IP="${{PI_IP:-localhost}}"
+
+echo ""
+echo -e "${{GREEN}}========================================================${{NC}}"
+echo -e "${{GREEN}} AnalogAir Installation Complete!${{NC}}"
+echo -e "${{GREEN}}========================================================${{NC}}"
+echo ""
+echo "Your Raspberry Pi is now streaming vinyl audio to OwnTone."
+echo ""
+echo -e " 1. OwnTone AirPlay Admin:        ${{BLUE}}http://${{PI_IP}}:3689${{NC}}"
+echo -e " 2. AnalogAir Web / Touchscreen:  ${{BLUE}}http://${{PI_IP}}:3000${{NC}}"
+echo " 3. Audio Pipe Location:          $CONF_MUSIC_DIR/AnalogAir/AnalogAir"
+echo " 4. Live Artwork:                 $CONF_MUSIC_DIR/AnalogAir/AnalogAir.jpg"
+echo " 5. Standby Artwork:              $CONF_MUSIC_DIR/AnalogAir/AnalogAir_default.jpg"
+echo " 6. Hardware Power Button:        Pins 5 & 6 (GPIO 3 + GND) -> Immediate Safe Shutdown & Wake"
+echo ""
+echo "Next Steps:"
+echo " - Connect your turntable / USB capture card to any USB port on your Pi."
+echo " - Open OwnTone (http://${{PI_IP}}:3689) and select your AirPlay speakers."
+echo " - Open the AnalogAir Web UI (http://${{PI_IP}}:3000) on your phone, tablet, or touchscreen for album art and tone controls!"
+echo ""
+'''
+
+    with open(os.path.join(ROOT_DIR, "install.sh"), "w", encoding="utf-8") as f:
+        f.write(installer_content)
+
+    print("install.sh successfully updated!")
+
+if __name__ == "__main__":
+    main()

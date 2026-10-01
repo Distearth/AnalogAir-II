@@ -1,0 +1,439 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { NowPlayingDisplay } from './components/NowPlayingDisplay';
+import { ControlsOverlay } from './components/ControlsOverlay';
+import { MetadataEditorModal } from './components/MetadataEditorModal';
+import { ScreenDimmer } from './components/ScreenDimmer';
+import {
+  NowPlayingState,
+  ToneControls,
+  OwnToneOutput,
+  PlaySession,
+  SystemPreferences
+} from './types';
+
+const defaultState: NowPlayingState = {
+  status: 'idle',
+  artist: 'Audio-Technica',
+  album: 'Turntable Standby',
+  title: 'AnalogAir Vinyl',
+  artUrl: '',
+  mbid: '',
+  sourceType: 'vinyl',
+  isContinuous: false,
+  sideLocked: false,
+  playCount: 0,
+  rmsLevel: 0.0,
+  sampleRate: 44100,
+  bitDepth: 16,
+  inputDeviceName: 'USB Audio Device',
+  matchedVia: 'idle_default'
+};
+
+const defaultTone: ToneControls = {
+  inputGainDb: 0,
+  bassGainDb: 1.5,
+  midGainDb: 0,
+  trebleGainDb: 0.5,
+  selectedDeviceId: 'usb_audio_codec_0',
+  deviceList: []
+};
+
+const defaultSettings: SystemPreferences = {
+  sourceType: 'vinyl',
+  customStreamLabel: 'Vinyl Audio Streaming',
+  defaultArtUrl: '/api/artwork/custom-standby.jpg',
+  idleArtist: 'Audio-Technica',
+  idleAlbum: 'AT-LP60X Turntable',
+  idleTitle: 'AnalogAir Vinyl Stream',
+  enableRecognition: false,
+  continuousId: false,
+  silenceGapSeconds: 20,
+  dimMinutes: 25,
+  idleFadeSeconds: 10,
+  owntoneHost: 'localhost',
+  owntonePort: 3689,
+  enableToneDsp: true
+};
+
+async function safeJsonFetch<T>(url: string, options?: RequestInit): Promise<T | null> {
+  try {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
+      return (await res.json()) as T;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export default function App() {
+  const [state, setState] = useState<NowPlayingState>(defaultState);
+  const [tone, setTone] = useState<ToneControls>(defaultTone);
+  const [outputs, setOutputs] = useState<OwnToneOutput[]>([]);
+  const [sessions, setSessions] = useState<PlaySession[]>([]);
+  const [settings, setSettings] = useState<SystemPreferences>(defaultSettings);
+
+  const [isControlsOpen, setIsControlsOpen] = useState(false);
+  const [controlsTab, setControlsTab] = useState<'quick' | 'tone' | 'speakers' | 'history' | 'update' | 'settings'>('quick');
+  const [isMetadataEditorOpen, setIsMetadataEditorOpen] = useState(false);
+  const [lastActivityTimestamp, setLastActivityTimestamp] = useState<number>(Date.now());
+
+  // Track user interaction to reset OLED burn-in dimmer timer
+  const recordActivity = useCallback(() => {
+    setLastActivityTimestamp(Date.now());
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', recordActivity);
+    window.addEventListener('mousedown', recordActivity);
+    window.addEventListener('touchstart', recordActivity);
+    window.addEventListener('keydown', recordActivity);
+
+    return () => {
+      window.removeEventListener('mousemove', recordActivity);
+      window.removeEventListener('mousedown', recordActivity);
+      window.removeEventListener('touchstart', recordActivity);
+      window.removeEventListener('keydown', recordActivity);
+    };
+  }, [recordActivity]);
+
+  // Fetch full status
+  const fetchState = useCallback(async () => {
+    const data = await safeJsonFetch<any>('/api/state');
+    if (!data) return;
+
+    setState({
+      status: data.status || defaultState.status,
+      artist: data.artist || defaultState.artist,
+      album: data.album || defaultState.album,
+      title: data.title || defaultState.title,
+      artUrl: data.artUrl || defaultState.artUrl,
+      mbid: data.mbid,
+      sourceType: data.sourceType || 'vinyl',
+      isContinuous: data.isContinuous ?? defaultState.isContinuous,
+      sideLocked: data.sideLocked ?? defaultState.sideLocked,
+      playCount: data.playCount,
+      rmsLevel: data.rmsLevel ?? defaultState.rmsLevel,
+      sampleRate: data.sampleRate ?? defaultState.sampleRate,
+      bitDepth: data.bitDepth ?? defaultState.bitDepth,
+      inputDeviceName: data.inputDeviceName || defaultState.inputDeviceName,
+      matchedVia: data.matchedVia || defaultState.matchedVia,
+      startedAt: data.startedAt || defaultState.startedAt
+    });
+    if (data.tone) {
+      setTone(prev => ({ ...prev, ...data.tone }));
+    }
+    if (data.settings) {
+      setSettings(prev => ({ ...prev, ...data.settings }));
+    }
+  }, []);
+
+  const fetchToneAndDevices = useCallback(async () => {
+    const data = await safeJsonFetch<ToneControls>('/api/tone');
+    if (data) {
+      setTone(prev => ({ ...prev, ...data }));
+    }
+  }, []);
+
+  const fetchOutputs = useCallback(async () => {
+    const data = await safeJsonFetch<{
+      outputs?: OwnToneOutput[];
+      favoriteSpeakers?: string[];
+      autoConnectSpeakers?: string[];
+    }>('/api/owntone/outputs');
+    if (data?.outputs) {
+      const storedFavs: string[] = (() => {
+        try {
+          const raw = localStorage.getItem('analogair_favorite_speakers');
+          return raw ? JSON.parse(raw).map(String) : [];
+        } catch {
+          return [];
+        }
+      })();
+
+      const storedAutos: string[] = (() => {
+        try {
+          const raw = localStorage.getItem('analogair_autoconnect_speakers');
+          return raw ? JSON.parse(raw).map(String) : [];
+        } catch {
+          return [];
+        }
+      })();
+
+      const serverFavs = Array.isArray(data.favoriteSpeakers) ? data.favoriteSpeakers.map(String) : null;
+      if (serverFavs) {
+        try {
+          localStorage.setItem('analogair_favorite_speakers', JSON.stringify(serverFavs));
+        } catch {}
+      }
+
+      const serverAutos = Array.isArray(data.autoConnectSpeakers) ? data.autoConnectSpeakers.map(String) : null;
+      if (serverAutos) {
+        try {
+          localStorage.setItem('analogair_autoconnect_speakers', JSON.stringify(serverAutos));
+        } catch {}
+      }
+
+      const activeFavs = serverFavs || storedFavs;
+      const activeAutos = serverAutos || storedAutos;
+
+      setOutputs(data.outputs.map(o => {
+        const sId = String(o.id);
+        return {
+          ...o,
+          id: sId,
+          isFavorite: activeFavs.includes(sId) || Boolean(o.isFavorite),
+          autoConnect: activeAutos.includes(sId) || Boolean(o.autoConnect)
+        };
+      }));
+    }
+  }, []);
+
+  const fetchSessions = useCallback(async () => {
+    const data = await safeJsonFetch<{ sessions?: PlaySession[] }>('/api/sessions');
+    if (data?.sessions) {
+      setSessions(data.sessions);
+    }
+  }, []);
+
+  // Polling loop
+  useEffect(() => {
+    fetchState();
+    fetchToneAndDevices();
+    fetchOutputs();
+    fetchSessions();
+
+    const interval = setInterval(() => {
+      fetchState();
+      fetchOutputs();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [fetchState, fetchToneAndDevices, fetchOutputs, fetchSessions]);
+
+  const pendingToneRef = useRef<Partial<ToneControls>>({});
+  const toneDebounceTimerRef = useRef<any>(null);
+
+  // Update tone controls (immediate local state update, debounced network commit)
+  const handleUpdateTone = async (newTone: Partial<ToneControls>, immediate: boolean = false) => {
+    setTone(prev => ({ ...prev, ...newTone }));
+    pendingToneRef.current = { ...pendingToneRef.current, ...newTone };
+
+    if (toneDebounceTimerRef.current) {
+      clearTimeout(toneDebounceTimerRef.current);
+      toneDebounceTimerRef.current = null;
+    }
+
+    const commit = async () => {
+      const payload = { ...pendingToneRef.current };
+      pendingToneRef.current = {};
+      await safeJsonFetch('/api/tone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    };
+
+    if (immediate) {
+      await commit();
+    } else {
+      toneDebounceTimerRef.current = setTimeout(commit, 350);
+    }
+  };
+
+  // Toggle OwnTone speaker (Enforces 100% volume by default)
+  const handleToggleOutput = async (id: string) => {
+    let targetWillSelect = false;
+    setOutputs(prev => prev.map(o => {
+      if (o.id === id) {
+        const willSelect = !o.selected;
+        if (willSelect) targetWillSelect = true;
+        return {
+          ...o,
+          selected: willSelect,
+          volume: willSelect ? 100 : o.volume
+        };
+      }
+      return o;
+    }));
+
+    const data = await safeJsonFetch<{ output?: OwnToneOutput; playbackEnsured?: boolean }>(`/api/owntone/outputs/${id}/toggle`, { method: 'POST' });
+    if (data?.output) {
+      setOutputs(prev => prev.map(o => o.id === id ? { ...o, ...data.output } : o));
+    }
+
+    // When selecting/activating a speaker destination, ensure OwnTone is actively streaming from the pipe
+    if (targetWillSelect || data?.output?.selected) {
+      await safeJsonFetch('/api/owntone/player/play', { method: 'POST' });
+    }
+  };
+
+  const handleUpdateOutputVolume = async (id: string, vol: number) => {
+    setOutputs(prev => prev.map(o => o.id === id ? { ...o, volume: vol } : o));
+    await safeJsonFetch(`/api/owntone/outputs/${id}/volume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ volume: vol })
+    });
+  };
+
+  const handleToggleFavoriteOutput = async (id: string) => {
+    const stringId = String(id);
+    setOutputs(prev => {
+      const updated = prev.map(o => String(o.id) === stringId ? { ...o, isFavorite: !o.isFavorite } : o);
+      try {
+        const favIds = updated.filter(o => o.isFavorite).map(o => String(o.id));
+        localStorage.setItem('analogair_favorite_speakers', JSON.stringify(favIds));
+      } catch {
+        // ignore storage errors
+      }
+      return updated;
+    });
+    const res = await safeJsonFetch<{ success?: boolean; isFavorite?: boolean; favoriteSpeakers?: string[] }>(
+      `/api/owntone/outputs/${stringId}/favorite`,
+      { method: 'POST' }
+    );
+    if (res?.favoriteSpeakers && Array.isArray(res.favoriteSpeakers)) {
+      const serverFavs = res.favoriteSpeakers.map(String);
+      try {
+        localStorage.setItem('analogair_favorite_speakers', JSON.stringify(serverFavs));
+      } catch {}
+      setOutputs(prev => prev.map(o => ({
+        ...o,
+        isFavorite: serverFavs.includes(String(o.id))
+      })));
+    }
+  };
+
+  const handleToggleAutoConnectOutput = async (id: string) => {
+    const stringId = String(id);
+    setOutputs(prev => {
+      const updated = prev.map(o => String(o.id) === stringId ? { ...o, autoConnect: !o.autoConnect } : o);
+      try {
+        const autoIds = updated.filter(o => o.autoConnect).map(o => String(o.id));
+        localStorage.setItem('analogair_autoconnect_speakers', JSON.stringify(autoIds));
+      } catch {
+        // ignore storage errors
+      }
+      return updated;
+    });
+    const res = await safeJsonFetch<{ success?: boolean; autoConnect?: boolean; autoConnectSpeakers?: string[] }>(
+      `/api/owntone/outputs/${stringId}/autoconnect`,
+      { method: 'POST' }
+    );
+    if (res?.autoConnectSpeakers && Array.isArray(res.autoConnectSpeakers)) {
+      const serverAutos = res.autoConnectSpeakers.map(String);
+      try {
+        localStorage.setItem('analogair_autoconnect_speakers', JSON.stringify(serverAutos));
+      } catch {}
+      setOutputs(prev => prev.map(o => ({
+        ...o,
+        autoConnect: serverAutos.includes(String(o.id))
+      })));
+    }
+  };
+
+  const handleToggleMode = async (continuous: boolean) => {
+    setState(prev => ({ ...prev, isContinuous: continuous }));
+    await safeJsonFetch('/api/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ continuous })
+    });
+  };
+
+  const handleUpdateSettings = async (newSettings: Partial<SystemPreferences>) => {
+    setSettings(prev => ({ ...prev, ...newSettings }));
+    await safeJsonFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSettings)
+    });
+    fetchState();
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    setSessions(prev => prev.filter(s => s.id !== id));
+    await safeJsonFetch(`/api/sessions/${id}`, { method: 'DELETE' });
+  };
+
+  // Purge 30-second audio backlog by restarting OwnTone and audio capture pipe
+  const handlePurgeBuffer = async () => {
+    recordActivity(); // Wake from blackout / OLED dimmer state
+    await safeJsonFetch('/api/owntone/purge-buffer', { method: 'POST' });
+    // Refresh outputs and state
+    setTimeout(() => {
+      fetchOutputs();
+      fetchState();
+    }, 1500);
+  };
+
+  return (
+    <div className="relative w-full h-screen bg-black overflow-hidden font-sans text-neutral-100">
+      {/* 1. Fullscreen Touchscreen Now Playing View */}
+      <NowPlayingDisplay
+        state={state}
+        settings={settings}
+        onOpenControls={() => {
+          setControlsTab('quick');
+          setIsControlsOpen(true);
+        }}
+        onOpenSpeakers={() => {
+          setControlsTab('speakers');
+          setIsControlsOpen(true);
+        }}
+        onOpenEditMetadata={() => setIsMetadataEditorOpen(true)}
+        onPurgeBuffer={handlePurgeBuffer}
+        onWakeScreen={recordActivity}
+      />
+
+      {/* 2. Slide-up Touchscreen Controls Overlay */}
+      <ControlsOverlay
+        isOpen={isControlsOpen}
+        onClose={() => setIsControlsOpen(false)}
+        initialTab={controlsTab}
+        onTabChange={setControlsTab}
+        state={state}
+        tone={tone}
+        outputs={outputs}
+        sessions={sessions}
+        settings={settings}
+        onUpdateTone={handleUpdateTone}
+        onToggleOutput={handleToggleOutput}
+        onUpdateOutputVolume={handleUpdateOutputVolume}
+        onToggleFavoriteOutput={handleToggleFavoriteOutput}
+        onToggleAutoConnectOutput={handleToggleAutoConnectOutput}
+        onToggleMode={handleToggleMode}
+        onOpenEditMetadata={() => setIsMetadataEditorOpen(true)}
+        onUpdateSettings={handleUpdateSettings}
+        onDeleteSession={handleDeleteSession}
+        onPurgeBuffer={handlePurgeBuffer}
+      />
+
+      {/* 3. Metadata & Cover Art Override Modal */}
+      <MetadataEditorModal
+        isOpen={isMetadataEditorOpen}
+        onClose={() => setIsMetadataEditorOpen(false)}
+        currentArtist={state.artist}
+        currentAlbum={state.album}
+        currentTitle={state.title}
+        currentArtUrl={state.artUrl}
+        currentMbid={state.mbid}
+        onSaved={() => {
+          fetchState();
+          fetchSessions();
+        }}
+      />
+
+      {/* 4. OLED / Touchscreen Burn-in Protection Dimmer */}
+      <ScreenDimmer
+        dimMinutes={settings.dimMinutes}
+        lastActivityTimestamp={lastActivityTimestamp}
+        currentTrackKey={`${state.artist} - ${state.album}`}
+        onWake={recordActivity}
+      />
+    </div>
+  );
+}

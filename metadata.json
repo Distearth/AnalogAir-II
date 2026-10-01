@@ -1,0 +1,8 @@
+{
+  "name": "AnalogAir Display",
+  "description": "Smart vinyl audio streaming system with automatic album identification, PipeWire tone controls, AirPlay \u0026 OwnTone output management, and touchscreen display.\n\nUsing the Deadstream project board to make a display and controls directly on the raspberry pi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
