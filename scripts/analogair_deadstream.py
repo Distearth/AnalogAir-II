@@ -32,12 +32,19 @@ try:
 except ImportError:
     HAS_GPIOZERO = False
 
+HAS_ST7735 = False
+ST7735Class = None
 try:
-    import spidev
-    import ST7735
+    import st7735
+    ST7735Class = getattr(st7735, 'ST7735', st7735)
     HAS_ST7735 = True
-except ImportError:
-    HAS_ST7735 = False
+except (ImportError, AttributeError):
+    try:
+        import ST7735
+        ST7735Class = getattr(ST7735, 'ST7735', ST7735)
+        HAS_ST7735 = True
+    except ImportError:
+        HAS_ST7735 = False
 
 # Local Wi-Fi helper
 try:
@@ -55,44 +62,51 @@ CONFIG_PATHS = [
     Path(__file__).resolve().parent.parent / "deadstream.json"
 ]
 
+# Official Grateful Dead Time Machine PCB Pinout:
+# - Display: SPI0 (MOSI 10, SCLK 11, CE0 8), DC: GPIO 24, Reset: GPIO 25, BL: 3.3V
+# - Knob 1 (Left / Year):  CLK: GPIO 16, DT: GPIO 22, SW: GPIO 23
+# - Knob 2 (Center / Month): CLK: GPIO 12, DT: GPIO 5,  SW: GPIO 6
+# - Knob 3 (Right / Day):   CLK: GPIO 13, DT: GPIO 17, SW: GPIO 27
+# - Front Buttons: Page: GPIO 2 (Stop), Action: GPIO 4 (Select), Source: GPIO 3 (Rewind)
 DEFAULT_CONFIG = {
     "enabled": True,
     "api_base": "http://127.0.0.1:3000",
     "display": {
         "width": 160,
         "height": 128,
-        "rotation": 90,       # 0, 90, 180, 270 (160x128 landscape)
+        "rotation": 90,       # 160x128 landscape
         "spi_port": 0,
         "spi_cs": 0,
-        "dc_pin": 25,
-        "rst_pin": 27,
-        "bl_pin": 18,
+        "dc_pin": 24,
+        "rst_pin": 25,
+        "bl_pin": None,       # 3.3V on Deadstream PCB (no GPIO pin needed)
+        "invert": False,
         "brightness": 100
     },
     "knobs": {
         "volume": {
-            "name": "Volume (Left)",
-            "clk": 17,
-            "dt": 27,
-            "sw": 22
+            "name": "Volume (Left / Year)",
+            "clk": 16,
+            "dt": 22,
+            "sw": 23
         },
         "tone": {
-            "name": "Tone (Center)",
-            "clk": 5,
-            "dt": 6,
-            "sw": 13
+            "name": "Tone DSP (Center / Month)",
+            "clk": 12,
+            "dt": 5,
+            "sw": 6
         },
         "speakers": {
-            "name": "Speakers / Menu (Right)",
-            "clk": 19,
-            "dt": 26,
-            "sw": 4
+            "name": "Speakers / Wi-Fi (Right / Day)",
+            "clk": 13,
+            "dt": 17,
+            "sw": 27
         }
     },
     "buttons": {
-        "page": 2,            # Tactile Button 1 (SDA)
-        "action": 3,          # Tactile Button 2 (SCL)
-        "source": 14          # Tactile Button 3 (TX)
+        "page": 2,            # Tactile Button 1 (SDA / Stop)
+        "action": 4,          # Tactile Button 2 (Select)
+        "source": 3           # Tactile Button 3 (SCL / Rewind)
     }
 }
 
@@ -160,6 +174,9 @@ class DeadstreamController:
         self.canvas = Image.new("RGB", (self.width, self.height), color=(10, 10, 14))
         self.draw = ImageDraw.Draw(self.canvas)
 
+        # Test mode flag
+        self.is_test_mode = "--test" in sys.argv
+
         # Fonts
         self.font_title = ImageFont.load_default()
         self.font_body = ImageFont.load_default()
@@ -184,21 +201,28 @@ class DeadstreamController:
     def init_display(self):
         """Initializes ST7735 TFT via SPI."""
         d_cfg = self.config.get("display", {})
-        if HAS_ST7735:
+        if HAS_ST7735 and ST7735Class is not None:
             try:
-                self.disp = ST7735.ST7735(
-                    port=d_cfg.get("spi_port", 0),
-                    cs=d_cfg.get("spi_cs", 0),
-                    dc=d_cfg.get("dc_pin", 25),
-                    rst=d_cfg.get("rst_pin", 27),
-                    backlight=d_cfg.get("bl_pin", 18),
-                    rotation=self.rotation,
-                    width=self.width,
-                    height=self.height,
-                    invert=False
-                )
+                dc_pin = d_cfg.get("dc_pin", 24)
+                rst_pin = d_cfg.get("rst_pin", 25)
+                bl_pin = d_cfg.get("bl_pin", None)
+                kwargs = {
+                    "port": d_cfg.get("spi_port", 0),
+                    "cs": d_cfg.get("spi_cs", 0),
+                    "dc": dc_pin,
+                    "rotation": self.rotation,
+                    "width": self.width,
+                    "height": self.height,
+                    "invert": d_cfg.get("invert", False)
+                }
+                if rst_pin is not None:
+                    kwargs["rst"] = rst_pin
+                if bl_pin is not None:
+                    kwargs["backlight"] = bl_pin
+
+                self.disp = ST7735Class(**kwargs)
                 self.disp.begin()
-                print("[Deadstream] ST7735 SPI display initialized successfully.")
+                print(f"[Deadstream] ST7735 SPI display initialized successfully (DC={dc_pin}, RST={rst_pin}).")
             except Exception as e:
                 print(f"[Deadstream] Hardware ST7735 init failed: {e}. Running in headless/framebuffer mode.")
                 self.disp = None
@@ -224,6 +248,7 @@ class DeadstreamController:
             self.btn_volume = Button(v_cfg["sw"], pull_up=True, bounce_time=0.05, hold_time=1.5)
             self.btn_volume.when_pressed = self.on_volume_click
             self.btn_volume.when_held = self.on_volume_long_press
+            print(f"[Deadstream] Knob 1 (Volume) active: CLK={v_cfg['clk']}, DT={v_cfg['dt']}, SW={v_cfg['sw']}")
         except Exception as e:
             print(f"[Deadstream] Error initializing Volume knob: {e}")
 
@@ -237,6 +262,7 @@ class DeadstreamController:
             self.btn_tone = Button(t_cfg["sw"], pull_up=True, bounce_time=0.05, hold_time=1.5)
             self.btn_tone.when_pressed = self.on_tone_click
             self.btn_tone.when_held = self.on_tone_long_press
+            print(f"[Deadstream] Knob 2 (Tone DSP) active: CLK={t_cfg['clk']}, DT={t_cfg['dt']}, SW={t_cfg['sw']}")
         except Exception as e:
             print(f"[Deadstream] Error initializing Tone knob: {e}")
 
@@ -250,19 +276,24 @@ class DeadstreamController:
             self.btn_speakers = Button(s_cfg["sw"], pull_up=True, bounce_time=0.05, hold_time=1.5)
             self.btn_speakers.when_pressed = self.on_speakers_click
             self.btn_speakers.when_held = self.on_speakers_long_press
+            print(f"[Deadstream] Knob 3 (Speakers/Wi-Fi) active: CLK={s_cfg['clk']}, DT={s_cfg['dt']}, SW={s_cfg['sw']}")
         except Exception as e:
             print(f"[Deadstream] Error initializing Speakers knob: {e}")
 
         # 4. Front Tactile Buttons
         try:
-            self.btn_page = Button(b_cfg.get("page", 2), pull_up=True, bounce_time=0.08)
+            p_pin = b_cfg.get("page", 2)
+            self.btn_page = Button(p_pin, pull_up=True, bounce_time=0.08)
             self.btn_page.when_pressed = self.cycle_page
 
-            self.btn_action = Button(b_cfg.get("action", 3), pull_up=True, bounce_time=0.08)
+            a_pin = b_cfg.get("action", 4)
+            self.btn_action = Button(a_pin, pull_up=True, bounce_time=0.08)
             self.btn_action.when_pressed = self.on_action_button
 
-            self.btn_source = Button(b_cfg.get("source", 14), pull_up=True, bounce_time=0.08)
+            s_pin = b_cfg.get("source", 3)
+            self.btn_source = Button(s_pin, pull_up=True, bounce_time=0.08)
             self.btn_source.when_pressed = self.on_source_button
+            print(f"[Deadstream] Tactile buttons active: Page={p_pin}, Action={a_pin}, Source={s_pin}")
         except Exception as e:
             print(f"[Deadstream] Error initializing Tactile buttons: {e}")
 
@@ -270,6 +301,8 @@ class DeadstreamController:
     # Knob 1 (Left): Master Volume & Mute / Buffer Resync
     # =========================================================================
     def on_volume_up(self):
+        if self.is_test_mode:
+            print(f"[Test] Knob 1 (Volume) turned UP -> {min(100, self.master_volume + 2)}%")
         if self.wifi_entering_pass:
             # Knob 1 dials characters forward
             self.wifi_char_idx = (self.wifi_char_idx + 1) % len(self.wifi_charset)
@@ -280,6 +313,8 @@ class DeadstreamController:
         self.trigger_hud("VOLUME", f"{self.master_volume}%", self.master_volume)
 
     def on_volume_down(self):
+        if self.is_test_mode:
+            print(f"[Test] Knob 1 (Volume) turned DOWN -> {max(0, self.master_volume - 2)}%")
         if self.wifi_entering_pass:
             # Knob 1 dials characters backward
             self.wifi_char_idx = (self.wifi_char_idx - 1) % len(self.wifi_charset)
@@ -290,6 +325,8 @@ class DeadstreamController:
         self.trigger_hud("VOLUME", f"{self.master_volume}%", self.master_volume)
 
     def on_volume_click(self):
+        if self.is_test_mode:
+            print(f"[Test] Knob 1 (Volume) CLICKED -> Mute toggle (now {not self.is_muted})")
         if self.wifi_entering_pass:
             # Append selected character
             ch = self.wifi_charset[self.wifi_char_idx]
@@ -325,37 +362,40 @@ class DeadstreamController:
     # Knob 2 (Center): Tone DSP & Phono Gain
     # =========================================================================
     def on_tone_up(self):
+        param = self.tone_params[self.active_tone_param]
+        curr = float(self.tone.get(param, 0.0))
+        new_val = min(12.0, round(curr + 0.5, 1))
+        label = self.tone_labels[self.active_tone_param]
+        if self.is_test_mode:
+            print(f"[Test] Knob 2 (Tone) turned UP: {label} -> {new_val:+.1f} dB")
         if self.wifi_entering_pass:
             # Knob 2 backspace
             if len(self.wifi_entered_pass) > 0:
                 self.wifi_entered_pass = self.wifi_entered_pass[:-1]
             return
 
-        param = self.tone_params[self.active_tone_param]
-        curr = float(self.tone.get(param, 0.0))
-        new_val = min(12.0, round(curr + 0.5, 1))
         self.tone[param] = new_val
         self.save_tone_dsp()
-        label = self.tone_labels[self.active_tone_param]
         pct = int(((new_val + 12.0) / 24.0) * 100)
         self.trigger_hud(label.upper(), f"{new_val:+.1f} dB", pct)
 
     def on_tone_down(self):
-        if self.wifi_entering_pass:
-            return
-
         param = self.tone_params[self.active_tone_param]
         curr = float(self.tone.get(param, 0.0))
         new_val = max(-12.0, round(curr - 0.5, 1))
+        label = self.tone_labels[self.active_tone_param]
+        if self.is_test_mode:
+            print(f"[Test] Knob 2 (Tone) turned DOWN: {label} -> {new_val:+.1f} dB")
+        if self.wifi_entering_pass:
+            return
+
         self.tone[param] = new_val
         self.save_tone_dsp()
-        label = self.tone_labels[self.active_tone_param]
         pct = int(((new_val + 12.0) / 24.0) * 100)
         self.trigger_hud(label.upper(), f"{new_val:+.1f} dB", pct)
 
     def on_tone_click(self):
         if self.wifi_entering_pass:
-            # Toggle enter / cancel
             return
 
         # Cycle active band: Bass -> Mid -> Treble -> Input Gain
@@ -363,11 +403,15 @@ class DeadstreamController:
         label = self.tone_labels[self.active_tone_param]
         param = self.tone_params[self.active_tone_param]
         val = float(self.tone.get(param, 0.0))
+        if self.is_test_mode:
+            print(f"[Test] Knob 2 (Tone) CLICKED -> Selected {label} ({val:+.1f} dB)")
         pct = int(((val + 12.0) / 24.0) * 100)
         self.trigger_hud(label.upper(), f"{val:+.1f} dB", pct)
 
     def on_tone_long_press(self):
         """Long press Knob 2: Resets Tone DSP to Flat (0.0 dB)."""
+        if self.is_test_mode:
+            print("[Test] Knob 2 (Tone) LONG-PRESSED -> Resetting Tone to Flat (0 dB)")
         self.tone["bassGainDb"] = 0.0
         self.tone["midGainDb"] = 0.0
         self.tone["trebleGainDb"] = 0.0
@@ -389,18 +433,24 @@ class DeadstreamController:
     # Knob 3 (Right): Speakers Navigation & Wi-Fi Picker
     # =========================================================================
     def on_speakers_up(self):
+        if self.is_test_mode:
+            print("[Test] Knob 3 (Speakers) turned UP")
         if self.current_page == 1 and self.outputs:
             self.selected_speaker_idx = (self.selected_speaker_idx - 1) % len(self.outputs)
         elif self.current_page == 3 and not self.wifi_entering_pass and self.wifi_scan_results:
             self.selected_wifi_idx = (self.selected_wifi_idx - 1) % len(self.wifi_scan_results)
 
     def on_speakers_down(self):
+        if self.is_test_mode:
+            print("[Test] Knob 3 (Speakers) turned DOWN")
         if self.current_page == 1 and self.outputs:
             self.selected_speaker_idx = (self.selected_speaker_idx + 1) % len(self.outputs)
         elif self.current_page == 3 and not self.wifi_entering_pass and self.wifi_scan_results:
             self.selected_wifi_idx = (self.selected_wifi_idx + 1) % len(self.wifi_scan_results)
 
     def on_speakers_click(self):
+        if self.is_test_mode:
+            print("[Test] Knob 3 (Speakers) CLICKED")
         if self.current_page == 1 and self.outputs:
             # Toggle connection for selected speaker
             spk = self.outputs[self.selected_speaker_idx]
@@ -463,12 +513,16 @@ class DeadstreamController:
         """Button 1 (Page): Cycles between Now Playing, Speakers, Tone DSP, and Wi-Fi."""
         self.wifi_entering_pass = False
         self.current_page = (self.current_page + 1) % len(self.pages)
+        if self.is_test_mode:
+            print(f"[Test] Button 1 (Page) PRESSED -> Screen: {self.pages[self.current_page]}")
         if self.current_page == 3:
             # Trigger scan on entering Wi-Fi page
             threading.Thread(target=self.refresh_wifi_scan, daemon=True).start()
 
     def on_action_button(self):
         """Button 2 (Action): Triggers instant Shazam re-identification."""
+        if self.is_test_mode:
+            print("[Test] Button 2 (Action) PRESSED -> Triggering Shazam scan")
         self.trigger_hud("IDENTIFYING", "Listening to vinyl...", 50)
         try:
             requests.post(f"{self.api_base}/api/recognize", timeout=1)
@@ -482,6 +536,8 @@ class DeadstreamController:
         idx = (sources.index(curr) + 1) % len(sources) if curr in sources else 0
         new_source = sources[idx]
         self.now_playing["sourceType"] = new_source
+        if self.is_test_mode:
+            print(f"[Test] Button 3 (Source) PRESSED -> Switched to source: {new_source.upper()}")
         try:
             requests.post(f"{self.api_base}/api/settings", json={"sourceType": new_source}, timeout=1)
             self.trigger_hud("SOURCE", new_source.upper(), 100)
