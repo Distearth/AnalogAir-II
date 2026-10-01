@@ -96,6 +96,11 @@ if [ "$1" == "--test" ]; then
         sudo systemctl stop listen-for-shutdown.service 2>/dev/null || true
     fi
 
+    # 3. Ensure SPI kernel modules are loaded and dev permissions are open
+    sudo modprobe spi_bcm2835 2>/dev/null || true
+    sudo modprobe spidev 2>/dev/null || true
+    sudo chmod 666 /dev/spidev0.* 2>/dev/null || true
+
     # Trap exit to restart background service cleanly
     cleanup() {
         echo ""
@@ -138,8 +143,11 @@ else
     fi
 fi
 
-# Ensure user is in spi, gpio, audio groups
+# Ensure user is in spi, gpio, audio groups and kernel modules are loaded
 sudo usermod -a -G spi,gpio,dialout,audio "$CURRENT_USER" 2>/dev/null || true
+sudo modprobe spi_bcm2835 2>/dev/null || true
+sudo modprobe spidev 2>/dev/null || true
+sudo chmod 666 /dev/spidev0.* 2>/dev/null || true
 
 # 2. Install required Python drivers into AnalogAir venv
 echo ""
@@ -152,6 +160,8 @@ fi
 "$VENV_PATH/bin/pip" install --upgrade pip
 "$VENV_PATH/bin/pip" install \
     st7735 \
+    luma.lcd \
+    luma.core \
     gpiozero \
     gpiod \
     spidev \

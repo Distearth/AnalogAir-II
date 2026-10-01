@@ -185,6 +185,124 @@ class DeadstreamController:
         self.init_display()
         self.init_gpio()
 
+class DirectST7735:
+    """
+    Pure Python ST7735 SPI display driver using standard spidev and gpiozero.
+    Zero external C library dependencies; works reliably across all Pi models.
+    """
+    def __init__(self, port=0, cs=0, dc=24, rst=25, width=160, height=128, rotation=90):
+        self.width = width
+        self.height = height
+        self.rotation = rotation
+        import spidev
+        from gpiozero import OutputDevice
+        self.dc = OutputDevice(dc)
+        self.rst = OutputDevice(rst) if rst is not None else None
+        self.spi = spidev.SpiDev()
+        self.spi.open(port, cs)
+        self.spi.max_speed_hz = 16000000
+        self.spi.mode = 0
+
+    def command(self, cmd):
+        self.dc.off()
+        self.spi.writebytes([cmd])
+
+    def data(self, val):
+        self.dc.on()
+        if isinstance(val, (list, tuple)):
+            self.spi.writebytes(list(val))
+        elif isinstance(val, (bytes, bytearray)):
+            self.spi.writebytes2(val)
+        else:
+            self.spi.writebytes([val])
+
+    def begin(self):
+        if self.rst:
+            self.rst.on()
+            time.sleep(0.01)
+            self.rst.off()
+            time.sleep(0.01)
+            self.rst.on()
+            time.sleep(0.12)
+
+        self.command(0x01)  # SWRESET
+        time.sleep(0.12)
+        self.command(0x11)  # SLPOUT
+        time.sleep(0.12)
+
+        # FRMCTR1: Frame rate control
+        self.command(0xB1)
+        self.data([0x01, 0x2C, 0x2D])
+
+        # INVCTR: Display inversion control
+        self.command(0xB4)
+        self.data([0x07])
+
+        # PWCTR1: Power control
+        self.command(0xC0)
+        self.data([0xA2, 0x02, 0x84])
+        self.command(0xC1)
+        self.data([0xC5])
+        self.command(0xC2)
+        self.data([0x0A, 0x00])
+
+        # VMCTR1: VCOM control
+        self.command(0xC5)
+        self.data([0x8A, 0x27])
+
+        # MADCTL: Memory Access Control (Orientation)
+        self.command(0x36)
+        if self.rotation == 90:
+            self.data([0xA8])  # Landscape 160x128 BGR
+        elif self.rotation == 270:
+            self.data([0x68])
+        elif self.rotation == 180:
+            self.data([0xC8])
+        else:
+            self.data([0x08])
+
+        # COLMOD: 16-bit RGB565
+        self.command(0x3A)
+        self.data([0x05])
+
+        # DISPON: Display on
+        self.command(0x29)
+        time.sleep(0.05)
+
+    def display(self, image):
+        img = image.convert("RGB")
+        w, h = img.size
+
+        # CASET: Column Address Set
+        self.command(0x2A)
+        self.data([0x00, 0x00, 0x00, (w - 1) & 0xFF])
+
+        # RASET: Row Address Set
+        self.command(0x2B)
+        self.data([0x00, 0x00, 0x00, (h - 1) & 0xFF])
+
+        # RAMWR: Memory Write
+        self.command(0x2C)
+        self.dc.on()
+
+        # Convert RGB888 to RGB565 byte buffer
+        raw = img.tobytes()
+        buf = bytearray(w * h * 2)
+        j = 0
+        for i in range(0, len(raw), 3):
+            r = raw[i]
+            g = raw[i+1]
+            b = raw[i+2]
+            rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+            buf[j] = (rgb565 >> 8) & 0xFF
+            buf[j+1] = rgb565 & 0xFF
+            j += 2
+
+        # Send in 4096-byte SPI chunks
+        chunk_size = 4096
+        for k in range(0, len(buf), chunk_size):
+            self.spi.writebytes2(buf[k:k+chunk_size])
+
     def load_config(self) -> Dict[str, Any]:
         for p in CONFIG_PATHS:
             if p.exists():
@@ -199,16 +317,32 @@ class DeadstreamController:
         return DEFAULT_CONFIG
 
     def init_display(self):
-        """Initializes ST7735 TFT via SPI."""
+        """Initializes ST7735 TFT via SPI with multi-tier driver fallback."""
         d_cfg = self.config.get("display", {})
+        dc_pin = d_cfg.get("dc_pin", 24)
+        rst_pin = d_cfg.get("rst_pin", 25)
+        bl_pin = d_cfg.get("bl_pin", None)
+        port = d_cfg.get("spi_port", 0)
+        cs = d_cfg.get("spi_cs", 0)
+
+        # Tier 1: Try luma.lcd (Industry standard on Raspberry Pi)
+        try:
+            from luma.core.interface.serial import spi as luma_spi
+            from luma.lcd.device import st7735 as luma_st7735
+            rotate_val = 1 if self.rotation == 90 else (2 if self.rotation == 180 else (3 if self.rotation == 270 else 0))
+            serial = luma_spi(port=port, device=cs, gpio_DC=dc_pin, gpio_RST=rst_pin)
+            self.disp = luma_st7735(serial, width=self.width, height=self.height, rotate=rotate_val)
+            print(f"[Deadstream] ST7735 display initialized via luma.lcd (DC={dc_pin}, RST={rst_pin}).")
+            return
+        except Exception as e_luma:
+            print(f"[Deadstream] Note (luma.lcd): {e_luma}")
+
+        # Tier 2: Try Pimoroni st7735 library
         if HAS_ST7735 and ST7735Class is not None:
             try:
-                dc_pin = d_cfg.get("dc_pin", 24)
-                rst_pin = d_cfg.get("rst_pin", 25)
-                bl_pin = d_cfg.get("bl_pin", None)
                 kwargs = {
-                    "port": d_cfg.get("spi_port", 0),
-                    "cs": d_cfg.get("spi_cs", 0),
+                    "port": port,
+                    "cs": cs,
                     "dc": dc_pin,
                     "rotation": self.rotation,
                     "width": self.width,
@@ -222,12 +356,30 @@ class DeadstreamController:
 
                 self.disp = ST7735Class(**kwargs)
                 self.disp.begin()
-                print(f"[Deadstream] ST7735 SPI display initialized successfully (DC={dc_pin}, RST={rst_pin}).")
-            except Exception as e:
-                print(f"[Deadstream] Hardware ST7735 init failed: {e}. Running in headless/framebuffer mode.")
-                self.disp = None
-        else:
-            print("[Deadstream] ST7735 library not installed. Running in framebuffer/headless mode.")
+                print(f"[Deadstream] ST7735 display initialized via st7735 driver (DC={dc_pin}, RST={rst_pin}).")
+                return
+            except Exception as e_st:
+                print(f"[Deadstream] Note (st7735): {e_st}")
+
+        # Tier 3: Direct Native ST7735 driver using spidev and gpiozero
+        try:
+            self.disp = DirectST7735(
+                port=port,
+                cs=cs,
+                dc=dc_pin,
+                rst=rst_pin,
+                width=self.width,
+                height=self.height,
+                rotation=self.rotation
+            )
+            self.disp.begin()
+            print(f"[Deadstream] ST7735 display initialized via Direct SPI driver (DC={dc_pin}, RST={rst_pin}).")
+            return
+        except Exception as e_direct:
+            print(f"[Deadstream] Direct SPI display driver note: {e_direct}")
+
+        print("[Deadstream] Display driver unavailable. Running in framebuffer/headless mode.")
+        self.disp = None
 
     def init_gpio(self):
         """Initializes 3 rotary encoders and 3 tactile buttons."""
