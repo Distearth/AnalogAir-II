@@ -110,81 +110,6 @@ DEFAULT_CONFIG = {
     }
 }
 
-class DeadstreamController:
-    def __init__(self):
-        self.config = self.load_config()
-        self.api_base = self.config.get("api_base", "http://127.0.0.1:3000")
-
-        self.width = self.config["display"].get("width", 160)
-        self.height = self.config["display"].get("height", 128)
-        self.rotation = self.config["display"].get("rotation", 90)
-
-        # State
-        self.running = True
-        self.current_page = 0  # 0: Now Playing, 1: Speakers, 2: Tone DSP, 3: Wi-Fi Setup
-        self.pages = ["now_playing", "speakers", "tone", "wifi"]
-
-        # Cached API State
-        self.now_playing: Dict[str, Any] = {
-            "status": "idle",
-            "artist": "Audio-Technica",
-            "album": "Turntable Standby",
-            "title": "AnalogAir Vinyl",
-            "sourceType": "vinyl"
-        }
-        self.tone: Dict[str, Any] = {
-            "inputGainDb": 0.0,
-            "bassGainDb": 1.5,
-            "midGainDb": 0.0,
-            "trebleGainDb": 0.5
-        }
-        self.outputs: List[Dict[str, Any]] = []
-        self.wifi_status: Dict[str, Any] = {
-            "connected": False,
-            "ssid": "",
-            "ip": "127.0.0.1",
-            "isHotspot": False
-        }
-        self.wifi_scan_results: List[Dict[str, Any]] = []
-
-        # UI interaction state
-        self.master_volume = 75
-        self.is_muted = False
-        self.active_tone_param = 0  # 0: Bass, 1: Mid, 2: Treble, 3: Input Gain
-        self.tone_params = ["bassGainDb", "midGainDb", "trebleGainDb", "inputGainDb"]
-        self.tone_labels = ["Bass", "Mid", "Treble", "Phono Gain"]
-
-        self.selected_speaker_idx = 0
-        self.selected_wifi_idx = 0
-
-        # HUD Overlay State (for temporary volume / tone popup)
-        self.hud_title = ""
-        self.hud_value = ""
-        self.hud_bar_pct = 0
-        self.hud_timeout = 0
-
-        # Wi-Fi manual password dialer state
-        self.wifi_entering_pass = False
-        self.wifi_entered_pass = ""
-        self.wifi_charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-= "
-        self.wifi_char_idx = 0
-
-        # Display device
-        self.disp = None
-        self.canvas = Image.new("RGB", (self.width, self.height), color=(10, 10, 14))
-        self.draw = ImageDraw.Draw(self.canvas)
-
-        # Test mode flag
-        self.is_test_mode = "--test" in sys.argv
-
-        # Fonts
-        self.font_title = ImageFont.load_default()
-        self.font_body = ImageFont.load_default()
-        self.font_small = ImageFont.load_default()
-
-        self.init_display()
-        self.init_gpio()
-
 class DirectST7735:
     """
     Pure Python ST7735 SPI display driver using standard spidev and gpiozero.
@@ -302,6 +227,81 @@ class DirectST7735:
         chunk_size = 4096
         for k in range(0, len(buf), chunk_size):
             self.spi.writebytes2(buf[k:k+chunk_size])
+
+class DeadstreamController:
+    def __init__(self):
+        self.config = self.load_config()
+        self.api_base = self.config.get("api_base", "http://127.0.0.1:3000")
+
+        self.width = self.config["display"].get("width", 160)
+        self.height = self.config["display"].get("height", 128)
+        self.rotation = self.config["display"].get("rotation", 90)
+
+        # State
+        self.running = True
+        self.current_page = 0  # 0: Now Playing, 1: Speakers, 2: Tone DSP, 3: Wi-Fi Setup
+        self.pages = ["now_playing", "speakers", "tone", "wifi"]
+
+        # Cached API State
+        self.now_playing: Dict[str, Any] = {
+            "status": "idle",
+            "artist": "Audio-Technica",
+            "album": "Turntable Standby",
+            "title": "AnalogAir Vinyl",
+            "sourceType": "vinyl"
+        }
+        self.tone: Dict[str, Any] = {
+            "inputGainDb": 0.0,
+            "bassGainDb": 1.5,
+            "midGainDb": 0.0,
+            "trebleGainDb": 0.5
+        }
+        self.outputs: List[Dict[str, Any]] = []
+        self.wifi_status: Dict[str, Any] = {
+            "connected": False,
+            "ssid": "",
+            "ip": "127.0.0.1",
+            "isHotspot": False
+        }
+        self.wifi_scan_results: List[Dict[str, Any]] = []
+
+        # UI interaction state
+        self.master_volume = 75
+        self.is_muted = False
+        self.active_tone_param = 0  # 0: Bass, 1: Mid, 2: Treble, 3: Input Gain
+        self.tone_params = ["bassGainDb", "midGainDb", "trebleGainDb", "inputGainDb"]
+        self.tone_labels = ["Bass", "Mid", "Treble", "Phono Gain"]
+
+        self.selected_speaker_idx = 0
+        self.selected_wifi_idx = 0
+
+        # HUD Overlay State (for temporary volume / tone popup)
+        self.hud_title = ""
+        self.hud_value = ""
+        self.hud_bar_pct = 0
+        self.hud_timeout = 0
+
+        # Wi-Fi manual password dialer state
+        self.wifi_entering_pass = False
+        self.wifi_entered_pass = ""
+        self.wifi_charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-= "
+        self.wifi_char_idx = 0
+
+        # Display device
+        self.disp = None
+        self.canvas = Image.new("RGB", (self.width, self.height), color=(10, 10, 14))
+        self.draw = ImageDraw.Draw(self.canvas)
+
+        # Test mode flag
+        self.is_test_mode = "--test" in sys.argv
+
+        # Fonts
+        self.font_title = ImageFont.load_default()
+        self.font_body = ImageFont.load_default()
+        self.font_small = ImageFont.load_default()
+
+        self.init_display()
+        self.init_gpio()
 
     def load_config(self) -> Dict[str, Any]:
         for p in CONFIG_PATHS:
